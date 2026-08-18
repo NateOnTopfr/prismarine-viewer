@@ -1,13 +1,7 @@
-function safeRequire (path) {
-  try {
-    return require(path)
-  } catch (e) {
-    return {}
-  }
-}
-const { loadImage } = safeRequire('node-canvas-webgl/lib')
 const THREE = require('three')
 const path = require('path')
+const fs = require('fs')
+const { PNG } = require('pngjs')
 
 const textureCache = {}
 // todo not ideal, export different functions for browser and node
@@ -19,10 +13,13 @@ function loadTexture (texture, cb) {
   if (textureCache[texture]) {
     cb(textureCache[texture])
   } else {
-    loadImage(path.resolve(__dirname, '../../public/' + texture)).then(image => {
-      textureCache[texture] = new THREE.CanvasTexture(image)
-      cb(textureCache[texture])
-    })
+    // Node: decode the atlas PNG with pngjs into a DataTexture. This uploads via a
+    // typed array (headless-gl handles it natively) and avoids node-canvas-webgl.
+    const png = PNG.sync.read(fs.readFileSync(path.resolve(__dirname, '../../public/' + texture)))
+    const tex = new THREE.DataTexture(new Uint8Array(png.data.buffer, png.data.byteOffset, png.data.length), png.width, png.height, THREE.RGBAFormat)
+    tex.needsUpdate = true
+    textureCache[texture] = tex
+    cb(tex)
   }
 }
 

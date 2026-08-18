@@ -26,6 +26,7 @@
     "compression": "^1.7.4",
     "express": "^4.17.1",
     "minecraft-data": "^3.0.0",
+    "pngjs": "^7.0.0",
     "prismarine-block": "^1.7.3",
     "prismarine-chunk": "^1.22.0",
     "prismarine-world": "^3.3.1",
@@ -47,7 +48,6 @@
     "minecrafthawkeye": "^1.2.5",
     "mineflayer": "^4.0.0",
     "mineflayer-pathfinder": "^2.0.0",
-    "node-canvas-webgl": "PrismarineJS/node-canvas-webgl",
     "prismarine-schematic": "^1.2.0",
     "prismarine-viewer": "file:./",
     "process": "^0.11.10",
@@ -55,5 +55,8 @@
     "standard": "^17.1.0",
     "webpack": "^5.10.2",
     "webpack-cli": "^6.0.1"
+  },
+  "allowScripts": {
+    "canvas@3.2.3": true
   }
 }
