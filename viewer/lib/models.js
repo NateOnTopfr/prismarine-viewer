@@ -363,6 +363,20 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
   }
 }
 
+// Render a plain textured cube from a model that has no elements. Used as a
+// fallback for block-entity / builtin models (chests, beds, signs, banners,
+// shulker boxes, heads, bells) which the block-model mesher can't build — this
+// at least shows a solid, correctly-tinted-ish block instead of nothing.
+function renderFallbackCube (world, cursor, model, attr, block, biome) {
+  const tex = model.textures && (model.textures.particle || model.textures.all || Object.values(model.textures)[0])
+  if (!tex || tex.su === undefined) return
+  const faces = {}
+  for (const f of ['up', 'down', 'north', 'south', 'east', 'west']) {
+    faces[f] = { texture: tex, cullface: f }
+  }
+  renderElement(world, cursor, { from: [0, 0, 0], to: [16, 16, 16], faces }, false, attr, null, null, block, biome)
+}
+
 function getSectionGeometry (sx, sy, sz, world, blocksStates) {
   const attr = {
     sx: sx + 8,
@@ -412,8 +426,13 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
               globalShift = vecsub3(globalShift, matmul3(globalMatrix, globalShift))
             }
 
-            for (const element of variant.model.elements) {
-              renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome)
+            const elements = variant.model.elements
+            if (!elements || elements.length === 0) {
+              renderFallbackCube(world, cursor, variant.model, attr, block, biome)
+            } else {
+              for (const element of elements) {
+                renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome)
+              }
             }
           }
         }
