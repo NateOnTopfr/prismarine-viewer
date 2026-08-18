@@ -479,8 +479,10 @@ function matchProperties (block, properties) {
 }
 
 function getModelVariants (block, blockStates) {
-  // air, cave_air, void_air and so on...
-  if (block.name.includes('air')) return []
+  // air, cave_air, void_air and so on... — must be an exact/suffix match, NOT a
+  // substring: `'stairs'.includes('air')` is true, which invisibly dropped all
+  // 58 stair block types (no variants -> no geometry).
+  if (block.name === 'air' || block.name.endsWith('_air')) return []
   const state = blockStates[block.name] ?? blockStates.missing_texture
   if (!state) return []
   if (state.variants) {

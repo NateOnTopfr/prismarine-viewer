@@ -12,14 +12,17 @@ function getModel (name, blocksModels) {
 
   let model = { textures: {}, elements: [], ao: true }
 
-  for (const axis in ['x', 'y', 'z']) {
+  if (data.parent) {
+    // resolve parent first, then let this level's own props override it
+    model = getModel(data.parent, blocksModels) || model
+  }
+
+  // `of`, not `in` — `for..in` over an array yields indices ('0','1','2'), so the
+  // old code never copied model-level x/y/z rotations.
+  for (const axis of ['x', 'y', 'z']) {
     if (axis in data) {
       model[axis] = data[axis]
     }
-  }
-
-  if (data.parent) {
-    model = getModel(data.parent, blocksModels)
   }
   if (data.textures) {
     Object.assign(model.textures, JSON.parse(JSON.stringify(data.textures)))
