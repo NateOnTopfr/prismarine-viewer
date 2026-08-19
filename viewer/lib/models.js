@@ -378,14 +378,45 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
 // fallback for block-entity / builtin models (chests, beds, signs, banners,
 // shulker boxes, heads, bells) which the block-model mesher can't build — this
 // at least shows a solid, correctly-tinted-ish block instead of nothing.
+// Proportional stand-in shapes for block-entities that ship builtin/entity models
+// with no elements (chest/bed/sign/…). Not the true entity geometry (that needs the
+// entity texture atlas), but the right SIZE/shape textured with the block's particle
+// texture — far better than a uniform 16³ cube. Returns element boxes (0..16).
+function fallbackShape (name) {
+  if (name.includes('chest')) return [{ from: [1, 0, 1], to: [15, 14, 15] }]        // 7/8 box on the floor
+  if (name.includes('bed')) return [{ from: [0, 0, 0], to: [16, 9, 16] }]           // low slab
+  if (name.includes('shulker')) return [{ from: [0, 0, 0], to: [16, 12, 16] }]      // closed-ish box
+  if (name.includes('decorated_pot')) return [{ from: [1, 0, 1], to: [15, 16, 15] }]
+  if (name.includes('flower_pot') || name.endsWith('_pot')) return [{ from: [5, 0, 5], to: [11, 6, 11] }]
+  if (name.includes('skull') || name.endsWith('_head')) return [{ from: [4, 0, 4], to: [12, 8, 12] }] // small head cube
+  if (name.includes('conduit')) return [{ from: [5, 5, 5], to: [11, 11, 11] }]
+  if (name.includes('bell')) return [{ from: [5, 4, 5], to: [11, 12, 11] }]
+  if (name.includes('banner')) {                                                    // thin tall board + post
+    return [{ from: [0, 0, 7], to: [16, 16, 9] }]
+  }
+  if (name.includes('hanging_sign')) return [{ from: [1, 2, 7], to: [15, 12, 9] }]
+  if (name.includes('wall_sign')) return [{ from: [0, 4, 7], to: [16, 12, 9] }]
+  if (name.includes('sign')) {                                                       // standing sign: board + post
+    return [{ from: [1, 8, 7], to: [15, 16, 9] }, { from: [7, 0, 7], to: [9, 8, 9] }]
+  }
+  return [{ from: [0, 0, 0], to: [16, 16, 16] }]                                     // default: full cube
+}
+
 function renderFallbackCube (world, cursor, model, attr, block, biome) {
   const tex = model.textures && (model.textures.particle || model.textures.all || Object.values(model.textures)[0])
   if (!tex || tex.su === undefined) return
-  const faces = {}
-  for (const f of ['up', 'down', 'north', 'south', 'east', 'west']) {
-    faces[f] = { texture: tex, cullface: f }
+  const shape = fallbackShape(block.name)
+  // A full cube can cull faces against solid neighbours; smaller stand-in shapes
+  // don't touch the block boundary, so they must render every face.
+  const full = shape.length === 1 && shape[0].to[0] - shape[0].from[0] === 16 &&
+    shape[0].to[1] - shape[0].from[1] === 16 && shape[0].to[2] - shape[0].from[2] === 16
+  for (const box of shape) {
+    const faces = {}
+    for (const f of ['up', 'down', 'north', 'south', 'east', 'west']) {
+      faces[f] = full ? { texture: tex, cullface: f } : { texture: tex }
+    }
+    renderElement(world, cursor, { from: box.from, to: box.to, faces }, false, attr, null, null, block, biome)
   }
-  renderElement(world, cursor, { from: [0, 0, 0], to: [16, 16, 16], faces }, false, attr, null, null, block, biome)
 }
 
 // Blocks that should be drawn in a second, alpha-blended pass so they tint what's
