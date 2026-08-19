@@ -81,7 +81,11 @@ setInterval(() => {
       // was wrong for 1.18+ negative-Y worlds and skipped all sub-zero terrain.)
       delete dirtySections[key]
       const geometry = getSectionGeometry(x, y, z, world, blocksStates)
-      const transferable = [geometry.positions.buffer, geometry.normals.buffer, geometry.colors.buffer, geometry.uvs.buffer]
+      const t = geometry.translucent
+      const transferable = [
+        geometry.positions.buffer, geometry.normals.buffer, geometry.colors.buffer, geometry.uvs.buffer,
+        t.positions.buffer, t.normals.buffer, t.colors.buffer, t.uvs.buffer
+      ]
       postMessage({ type: 'geometry', key, geometry }, transferable)
     }
     postMessage({ type: 'sectionFinished', key })

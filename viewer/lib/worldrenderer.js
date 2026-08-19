@@ -12,6 +12,7 @@ function mod (x, n) {
 class WorldRenderer {
   constructor (scene, numWorkers = 4) {
     this.sectionMeshs = {}
+    this.sectionMeshsT = {} // translucent (glass/ice) meshes, drawn in a blended pass
     this.active = false
     this.version = undefined
     this.scene = scene
@@ -22,6 +23,10 @@ class WorldRenderer {
     this.texturesDataUrl = undefined
 
     this.material = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, alphaTest: 0.1 })
+    // Translucent pass for glass/ice/etc.: real alpha blending with depthWrite off,
+    // drawn after the solid pass (high renderOrder) so it tints what's behind it
+    // instead of the flat cutout the solid material does.
+    this.tMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, depthWrite: false })
 
     this.workers = []
     for (let i = 0; i < numWorkers; i++) {
@@ -33,11 +38,9 @@ class WorldRenderer {
       const worker = new Worker(src)
       worker.onmessage = ({ data }) => {
         if (data.type === 'geometry') {
-          let mesh = this.sectionMeshs[data.key]
-          if (mesh) {
-            this.scene.remove(mesh)
-            dispose3(mesh)
-            delete this.sectionMeshs[data.key]
+          for (const store of [this.sectionMeshs, this.sectionMeshsT]) {
+            const old = store[data.key]
+            if (old) { this.scene.remove(old); dispose3(old); delete store[data.key] }
           }
 
           const chunkCoords = data.key.split(',')
@@ -50,10 +53,26 @@ class WorldRenderer {
           geometry.setAttribute('uv', new THREE.BufferAttribute(data.geometry.uvs, 2))
           geometry.setIndex(data.geometry.indices)
 
-          mesh = new THREE.Mesh(geometry, this.material)
+          const mesh = new THREE.Mesh(geometry, this.material)
           mesh.position.set(data.geometry.sx, data.geometry.sy, data.geometry.sz)
           this.sectionMeshs[data.key] = mesh
           this.scene.add(mesh)
+
+          // Second mesh for the translucent (glass/ice) faces, drawn after the solid pass.
+          const t = data.geometry.translucent
+          if (t && t.positions.length > 0) {
+            const tg = new THREE.BufferGeometry()
+            tg.setAttribute('position', new THREE.BufferAttribute(t.positions, 3))
+            tg.setAttribute('normal', new THREE.BufferAttribute(t.normals, 3))
+            tg.setAttribute('color', new THREE.BufferAttribute(t.colors, 3))
+            tg.setAttribute('uv', new THREE.BufferAttribute(t.uvs, 2))
+            tg.setIndex(t.indices)
+            const tmesh = new THREE.Mesh(tg, this.tMaterial)
+            tmesh.position.set(data.geometry.sx, data.geometry.sy, data.geometry.sz)
+            tmesh.renderOrder = 1000
+            this.sectionMeshsT[data.key] = tmesh
+            this.scene.add(tmesh)
+          }
         } else if (data.type === 'sectionFinished') {
           this.sectionsOutstanding.delete(data.key)
           this.renderUpdateEmitter.emit('update')
@@ -66,10 +85,11 @@ class WorldRenderer {
 
   resetWorld () {
     this.active = false
-    for (const mesh of Object.values(this.sectionMeshs)) {
-      this.scene.remove(mesh)
+    for (const store of [this.sectionMeshs, this.sectionMeshsT]) {
+      for (const mesh of Object.values(store)) this.scene.remove(mesh)
     }
     this.sectionMeshs = {}
+    this.sectionMeshsT = {}
     for (const worker of this.workers) {
       worker.postMessage({ type: 'reset' })
     }
@@ -92,6 +112,7 @@ class WorldRenderer {
       texture.minFilter = THREE.NearestFilter
       texture.flipY = false
       this.material.map = texture
+      this.tMaterial.map = texture
     })
 
     const loadBlockStates = () => {
@@ -130,12 +151,11 @@ class WorldRenderer {
     for (let y = -64; y < 320; y += 16) {
       this.setSectionDirty(new Vec3(x, y, z), false)
       const key = `${x},${y},${z}`
-      const mesh = this.sectionMeshs[key]
-      if (mesh) {
-        this.scene.remove(mesh)
-        dispose3(mesh)
+      for (const store of [this.sectionMeshs, this.sectionMeshsT]) {
+        const mesh = store[key]
+        if (mesh) { this.scene.remove(mesh); dispose3(mesh) }
+        delete store[key]
       }
-      delete this.sectionMeshs[key]
     }
   }
 

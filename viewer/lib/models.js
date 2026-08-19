@@ -308,6 +308,17 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
       ]
 
       vertex = vecadd3(matmul3(localMatrix, vertex), localShift)
+      // Element rescale: a rotated element with `rescale` grows along the two axes
+      // perpendicular to the rotation axis by 1/cos(angle), so 45°/22.5° parts
+      // (rails, hoppers, levers) fill the block instead of rendering undersized.
+      if (element.rotation && element.rotation.rescale) {
+        const a = Math.abs(element.rotation.angle || 0) * Math.PI / 180
+        const s = a ? 1 / Math.cos(a) : 1
+        const origin = element.rotation.origin
+        if (element.rotation.axis !== 'x') vertex[0] = origin[0] + (vertex[0] - origin[0]) * s
+        if (element.rotation.axis !== 'y') vertex[1] = origin[1] + (vertex[1] - origin[1]) * s
+        if (element.rotation.axis !== 'z') vertex[2] = origin[2] + (vertex[2] - origin[2]) * s
+      }
       vertex = vecadd3(matmul3(globalMatrix, vertex), globalShift)
       vertex = vertex.map(v => v / 16)
 
@@ -377,6 +388,17 @@ function renderFallbackCube (world, cursor, model, attr, block, biome) {
   renderElement(world, cursor, { from: [0, 0, 0], to: [16, 16, 16], faces }, false, attr, null, null, block, biome)
 }
 
+// Blocks that should be drawn in a second, alpha-blended pass so they tint what's
+// behind them (true translucency) instead of the flat alpha-cutout the solid pass
+// uses. Leaves/plain-glass frames stay in the solid (cutout) pass; water/lava keep
+// their existing path.
+function isTranslucent (name) {
+  return name.includes('stained_glass') ||
+    name === 'glass' || name === 'glass_pane' || name === 'tinted_glass' ||
+    name === 'ice' || name === 'frosted_ice' || name === 'honey_block' ||
+    name === 'slime_block' || name === 'nether_portal' || name === 'bubble_column'
+}
+
 function getSectionGeometry (sx, sy, sz, world, blocksStates) {
   const attr = {
     sx: sx + 8,
@@ -392,6 +414,9 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
     t_uvs: [],
     indices: []
   }
+  // Separate accumulator for translucent blocks (glass, ice, …) — drawn after the
+  // solid pass with depthWrite off so overlapping blocks blend correctly.
+  const tattr = { positions: [], normals: [], colors: [], uvs: [], indices: [] }
 
   const cursor = new Vec3(0, 0, 0)
   for (cursor.y = sy; cursor.y < sy + 16; cursor.y++) {
@@ -411,6 +436,7 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
           } else if (block.name === 'lava') {
             renderLiquid(world, cursor, variant.model.textures.particle, block.type, biome, false, attr)
           } else {
+            const target = isTranslucent(block.name) ? tattr : attr
             let globalMatrix = null
             let globalShift = null
 
@@ -428,10 +454,10 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
 
             const elements = variant.model.elements
             if (!elements || elements.length === 0) {
-              renderFallbackCube(world, cursor, variant.model, attr, block, biome)
+              renderFallbackCube(world, cursor, variant.model, target, block, biome)
             } else {
               for (const element of elements) {
-                renderElement(world, cursor, element, variant.model.ao, attr, globalMatrix, globalShift, block, biome)
+                renderElement(world, cursor, element, variant.model.ao, target, globalMatrix, globalShift, block, biome)
               }
             }
           }
@@ -466,6 +492,14 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
   attr.normals = new Float32Array(attr.normals)
   attr.colors = new Float32Array(attr.colors)
   attr.uvs = new Float32Array(attr.uvs)
+
+  attr.translucent = {
+    positions: new Float32Array(tattr.positions),
+    normals: new Float32Array(tattr.normals),
+    colors: new Float32Array(tattr.colors),
+    uvs: new Float32Array(tattr.uvs),
+    indices: tattr.indices
+  }
 
   return attr
 }

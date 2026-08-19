@@ -60,7 +60,14 @@ class Entities {
 
   update (entity) {
     if (!this.entities[entity.id]) {
-      const mesh = getEntityMesh(entity, this.scene)
+      let mesh
+      try {
+        mesh = getEntityMesh(entity, this.scene)
+      } catch (err) {
+        // Unknown/unsupported entity type (e.g. a mob absent from the 1.16.4 entity
+        // data the mesh builder uses) — skip it rather than crash the whole render.
+        return
+      }
       if (!mesh) return
       this.entities[entity.id] = mesh
       this.scene.add(mesh)
