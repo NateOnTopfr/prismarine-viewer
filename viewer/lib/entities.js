@@ -48,11 +48,39 @@ function getEntityMesh (entity, scene) {
     }
   }
 
-  const geometry = new THREE.BoxGeometry(entity.width, entity.height, entity.width)
-  geometry.translate(0, entity.height / 2, 0)
-  const material = new THREE.MeshBasicMaterial({ color: 0xff00ff })
-  const cube = new THREE.Mesh(geometry, material)
-  return cube
+  // No model for this entity type (e.g. a 1.17+ mob absent from the bundled 1.16
+  // entity data). Render a placeholder box sized to the entity's hitbox, tinted a
+  // stable muted colour hashed from the name — so it's a sensible, distinguishable
+  // stand-in for gameplay-test screenshots, not a garish magenta cube.
+  const w = entity.width || 0.6
+  const h = entity.height || 1.8
+  const geometry = new THREE.BoxGeometry(w, h, w)
+  geometry.translate(0, h / 2, 0)
+  const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
+  return new THREE.Mesh(geometry, material)
+}
+
+// Stable muted colour from an entity name (HSL → RGB, mid saturation/lightness).
+function nameColor (name) {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) & 0xffffff
+  const hue = (hash % 360) / 360
+  const s = 0.45
+  const l = 0.55
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+  const p = 2 * l - q
+  const r = Math.round(hue2rgb(p, q, hue + 1 / 3) * 255)
+  const g = Math.round(hue2rgb(p, q, hue) * 255)
+  const b = Math.round(hue2rgb(p, q, hue - 1 / 3) * 255)
+  return (r << 16) | (g << 8) | b
 }
 
 class Entities {
