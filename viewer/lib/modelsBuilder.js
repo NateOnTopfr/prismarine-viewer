@@ -101,7 +101,39 @@ function resolveModel (name, blocksModels, texturesJson) {
   return model
 }
 
+// minecraft-assets ships textures for newer blocks (pale_oak_*, resin_*, …) but its
+// blocks_states data omits their blockstates, so they'd render grey. Synthesize a
+// simple blockstate for any game block that has a texture but no state: a full cube
+// (cube_all), or a column when only a *_top texture exists. Imperfect geometry for
+// non-cube blocks, but colored instead of grey — and we never fork minecraft-assets.
+function synthesizeMissingStates (mcAssets, atlas) {
+  let blocks
+  try { blocks = require('minecraft-data')(mcAssets.version).blocksArray } catch (e) { return 0 }
+  if (!blocks) return 0
+  const tex = (atlas.json && atlas.json.textures) || {}
+  const has = (n) => tex[n] !== undefined
+  let added = 0
+  for (const b of blocks) {
+    const name = b.name
+    if (mcAssets.blocksStates[name]) continue
+    let model = null
+    if (has(name)) {
+      model = { parent: 'block/cube_all', textures: { all: 'block/' + name } }
+    } else if (has(name + '_top')) {
+      const side = has(name + '_side') ? name + '_side' : name + '_top'
+      model = { parent: 'block/cube_column', textures: { end: 'block/' + name + '_top', side: 'block/' + side } }
+    }
+    if (!model) continue
+    const mn = 'synth_' + name
+    mcAssets.blocksModels[mn] = model
+    mcAssets.blocksStates[name] = { variants: { '': { model: mn } } }
+    added++
+  }
+  return added
+}
+
 function prepareBlocksStates (mcAssets, atlas) {
+  synthesizeMissingStates(mcAssets, atlas)
   const blocksStates = mcAssets.blocksStates
   mcAssets.blocksStates.missing_texture = {
     variants: {

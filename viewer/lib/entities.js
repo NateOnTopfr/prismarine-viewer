@@ -6,10 +6,21 @@ const { dispose3 } = require('./dispose')
 
 const { createCanvas } = require('canvas')
 
+// The bundled entities.json geometry predates ~1.17, so newer mobs have no model.
+// Map ones that reuse an existing model (a trader llama IS a llama) to their base so
+// they render instead of being skipped. Genuinely-new geometry (warden, allay, frog,
+// camel, sniffer, breeze, armadillo, …) still can't render without regenerated entity
+// data and falls through to the skip guard in Entities.update.
+const ENTITY_ALIASES = {
+  trader_llama: 'llama',
+  glow_squid: 'squid',
+  illusioner: 'pillager'
+}
+
 function getEntityMesh (entity, scene) {
   if (entity.name) {
     try {
-      const e = new Entity('1.16.4', entity.name, scene)
+      const e = new Entity('1.16.4', ENTITY_ALIASES[entity.name] || entity.name, scene)
 
       if (entity.username !== undefined) {
         const canvas = createCanvas(500, 100)
