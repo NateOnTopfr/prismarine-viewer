@@ -6,11 +6,11 @@ const { dispose3 } = require('./dispose')
 
 const { createCanvas } = require('canvas')
 
-// The bundled entities.json geometry predates ~1.17, so newer mobs have no model.
-// Map ones that reuse an existing model (a trader llama IS a llama) to their base so
-// they render instead of being skipped. Genuinely-new geometry (warden, allay, frog,
-// camel, sniffer, breeze, armadillo, …) still can't render without regenerated entity
-// data and falls through to the skip guard in Entities.update.
+// Most 1.17+ mob geometry was added to entities.json by scripts/gen-missing-entities.mjs
+// (warden, allay, frog, camel, sniffer, breeze, armadillo, axolotl, goat, tadpole,
+// creaking — real Bedrock geometry + Java textures). ENTITY_ALIASES still covers mobs
+// that reuse an existing model (a trader llama IS a llama) rather than shipping their
+// own bones. Anything still without a model falls through to the placeholder box below.
 const ENTITY_ALIASES = {
   trader_llama: 'llama',
   glow_squid: 'squid',
@@ -103,8 +103,8 @@ class Entities {
       try {
         mesh = getEntityMesh(entity, this.scene)
       } catch (err) {
-        // Unknown/unsupported entity type (e.g. a mob absent from the 1.16.4 entity
-        // data the mesh builder uses) — skip it rather than crash the whole render.
+        // Unknown/unsupported entity type (no geometry in entities.json and no alias)
+        // — skip it rather than crash the whole render.
         return
       }
       if (!mesh) return
