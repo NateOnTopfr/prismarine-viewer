@@ -3,6 +3,41 @@
 const entities = require('./entities.json')
 const { loadTexture } = globalThis.isElectron ? require('../utils.electron.js') : require('../utils')
 
+// Entity textures load from the CURRENT asset version (minecraft-assets, 1.21.x) so new
+// content (decorated pots, current skins, …) renders — the bundled public/textures/1.16.4
+// set is only a fallback for anything the package doesn't ship. (node render path only.)
+const _fs = require('fs')
+const _path = require('path')
+let _cc = null; let _Img = null
+try { const c = require('canvas'); _cc = c.createCanvas; _Img = c.Image } catch { /* browser build */ }
+let _maEntityDir = null
+for (const v of ['1.21.1', '1.20.1', '1.19.4']) {
+  try { _maEntityDir = _path.join(require('minecraft-assets')(v).directory, 'entity'); break } catch { /* try next */ }
+}
+const _forkPublic = _path.resolve(__dirname, '../../../public')
+// texture arg is e.g. "textures/1.16.4/entity/chest/normal.png" — resolve the real file,
+// preferring the current-version minecraft-assets entity dir over the pinned public set.
+function resolveEntityTexture (texture) {
+  try {
+    const after = String(texture).split('/entity/')[1]
+    if (after && _maEntityDir) {
+      const f = _path.join(_maEntityDir, after)
+      if (_fs.existsSync(f)) return f
+    }
+    const pub = _path.join(_forkPublic, texture)
+    if (_fs.existsSync(pub)) return pub
+  } catch { /* fall through */ }
+  return null
+}
+function loadTextureAbs (file, cb) {
+  try {
+    const img = new _Img(); img.src = _fs.readFileSync(file)
+    const c = _cc(img.width || 16, img.height || 16)
+    c.getContext('2d').drawImage(img, 0, 0)
+    cb(new THREE.Texture(c))
+  } catch { /* skip */ }
+}
+
 const elemFaces = {
   up: {
     dir: [0, 1, 0],
@@ -188,14 +223,19 @@ function getMesh (texture, jsonModel) {
   mesh.bind(skeleton)
   mesh.scale.set(1 / 16, 1 / 16, 1 / 16)
 
-  loadTexture(texture, texture => {
-    texture.magFilter = THREE.NearestFilter
-    texture.minFilter = THREE.NearestFilter
-    texture.flipY = false
-    texture.wrapS = THREE.RepeatWrapping
-    texture.wrapT = THREE.RepeatWrapping
-    material.map = texture
-  })
+  const applyTex = (t) => {
+    t.magFilter = THREE.NearestFilter
+    t.minFilter = THREE.NearestFilter
+    t.flipY = false
+    t.wrapS = THREE.RepeatWrapping
+    t.wrapT = THREE.RepeatWrapping
+    t.needsUpdate = true
+    material.map = t
+    material.needsUpdate = true
+  }
+  const abs = (_cc && _Img) ? resolveEntityTexture(texture) : null
+  if (abs) loadTextureAbs(abs, applyTex)
+  else loadTexture(texture, applyTex)
 
   return mesh
 }
