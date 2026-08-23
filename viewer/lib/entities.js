@@ -17,47 +17,65 @@ const ENTITY_ALIASES = {
   illusioner: 'pillager'
 }
 
+// A billboarded text label (player username OR custom name / hologram text). Reused so
+// holograms (armor stands / named entities) actually show their text, not just a box.
+function makeTextSprite (text, height) {
+  const clean = String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1') // strip §-codes + wrapping quotes
+  if (!clean.trim()) return null
+  const pad = 16
+  const probe = createCanvas(8, 8).getContext('2d')
+  probe.font = '48pt Arial'
+  const w = Math.min(1200, Math.ceil(probe.measureText(clean).width) + pad * 2)
+  const canvas = createCanvas(w, 80)
+  const ctx = canvas.getContext('2d')
+  ctx.font = '48pt Arial'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  // outline for legibility against any background
+  ctx.lineWidth = 8
+  ctx.strokeStyle = 'rgba(0,0,0,0.85)'
+  ctx.strokeText(clean, w / 2, 44)
+  ctx.fillStyle = '#ffffff'
+  ctx.fillText(clean, w / 2, 44)
+  const tex = new THREE.Texture(canvas)
+  tex.needsUpdate = true
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }))
+  sprite.scale.set((w / 80) * 0.5, 0.5, 1) // keep aspect; ~0.5 block tall
+  sprite.position.y += (height || 1.8) + 0.5
+  return sprite
+}
+
 function getEntityMesh (entity, scene) {
+  let mesh
   if (entity.name) {
     try {
       const e = new Entity('1.16.4', ENTITY_ALIASES[entity.name] || entity.name, scene)
-
-      if (entity.username !== undefined) {
-        const canvas = createCanvas(500, 100)
-
-        const ctx = canvas.getContext('2d')
-        ctx.font = '50pt Arial'
-        ctx.fillStyle = '#000000'
-        ctx.textAlign = 'left'
-        ctx.textBaseline = 'top'
-
-        const txt = entity.username
-        ctx.fillText(txt, 100, 0)
-
-        const tex = new THREE.Texture(canvas)
-        tex.needsUpdate = true
-        const spriteMat = new THREE.SpriteMaterial({ map: tex })
-        const sprite = new THREE.Sprite(spriteMat)
-        sprite.position.y += entity.height + 0.6
-
-        e.mesh.add(sprite)
-      }
-      return e.mesh
+      mesh = e.mesh
     } catch (err) {
       console.log(err)
     }
   }
 
-  // No model for this entity type (e.g. a 1.17+ mob absent from the bundled 1.16
-  // entity data). Render a placeholder box sized to the entity's hitbox, tinted a
-  // stable muted colour hashed from the name — so it's a sensible, distinguishable
-  // stand-in for gameplay-test screenshots, not a garish magenta cube.
-  const w = entity.width || 0.6
-  const h = entity.height || 1.8
-  const geometry = new THREE.BoxGeometry(w, h, w)
-  geometry.translate(0, h / 2, 0)
-  const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
-  return new THREE.Mesh(geometry, material)
+  if (!mesh) {
+    // No model for this entity type (a display entity, or a mob still absent from the
+    // bundled data). Render a placeholder box sized to the entity's hitbox, tinted a
+    // stable muted colour hashed from the name — a distinguishable stand-in, not a
+    // garish magenta cube.
+    const w = entity.width || 0.6
+    const h = entity.height || 1.8
+    const geometry = new THREE.BoxGeometry(w, Math.max(0.1, h), w)
+    geometry.translate(0, h / 2, 0)
+    const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
+    mesh = new THREE.Mesh(geometry, material)
+  }
+
+  // Label: player username, or custom name / hologram text (metadata-derived).
+  const label = entity.username !== undefined ? entity.username : entity.customName
+  if (label) {
+    const sprite = makeTextSprite(label, entity.height)
+    if (sprite) mesh.add(sprite)
+  }
+  return mesh
 }
 
 // Stable muted colour from an entity name (HSL → RGB, mid saturation/lightness).

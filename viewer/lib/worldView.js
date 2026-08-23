@@ -2,6 +2,39 @@ const { spiral, ViewRect, chunkPos } = require('./simpleUtils')
 const { Vec3 } = require('vec3')
 const EventEmitter = require('events')
 
+// Flatten a chat component (string | {text,extra} | nbt-ish | array) to plain text, so
+// custom names / holograms render as their actual text. Best-effort and defensive —
+// entity metadata shapes vary by version.
+function flattenText (c) {
+  if (c == null) return undefined
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) return c.map(flattenText).filter(Boolean).join('') || undefined
+  let s = ''
+  if (typeof c.text === 'string') s = c.text
+  else if (c.text && typeof c.text.value === 'string') s = c.text.value
+  else if (typeof c.value === 'string') s = c.value
+  else if (c.value && typeof c.value.value === 'string') s = c.value.value
+  else if (c.value && typeof c.value.text === 'string') s = c.value.text
+  const extra = c.extra && (c.extra.value ? c.extra.value.value || c.extra.value : c.extra)
+  if (Array.isArray(extra)) s += extra.map(flattenText).filter(Boolean).join('')
+  return s || undefined
+}
+
+// A displayable name for an entity: its username (players) or its custom name
+// (metadata index 2 — armor-stand holograms, named mobs, etc.).
+function displayNameOf (e) {
+  if (e.username !== undefined) return undefined // players already handled via username
+  const cn = e.metadata && e.metadata[2]
+  return flattenText(cn)
+}
+
+function entityPayload (e) {
+  return {
+    id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height,
+    username: e.username, customName: displayNameOf(e)
+  }
+}
+
 class WorldView extends EventEmitter {
   constructor (world, viewDistance, position = new Vec3(0, 0, 0), emitter = null) {
     super()
@@ -27,7 +60,13 @@ class WorldView extends EventEmitter {
       // 'move': botPosition,
       entitySpawn: function (e) {
         if (e === bot.entity) return
-        worldView.emitter.emit('entity', { id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height, username: e.username })
+        worldView.emitter.emit('entity', entityPayload(e))
+      },
+      entityUpdate: function (e) {
+        // metadata (custom name / display content) usually arrives just AFTER spawn —
+        // re-emit so holograms & named entities actually get their text.
+        if (e === bot.entity) return
+        worldView.emitter.emit('entity', entityPayload(e))
       },
       entityMoved: function (e) {
         worldView.emitter.emit('entity', { id: e.id, pos: e.position, pitch: e.pitch, yaw: e.yaw })
@@ -51,7 +90,7 @@ class WorldView extends EventEmitter {
     for (const id in bot.entities) {
       const e = bot.entities[id]
       if (e && e !== bot.entity) {
-        this.emitter.emit('entity', { id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height, username: e.username })
+        this.emitter.emit('entity', entityPayload(e))
       }
     }
   }
