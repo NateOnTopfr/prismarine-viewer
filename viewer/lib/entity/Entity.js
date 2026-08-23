@@ -10,21 +10,32 @@ const _fs = require('fs')
 const _path = require('path')
 let _cc = null; let _Img = null
 try { const c = require('canvas'); _cc = c.createCanvas; _Img = c.Image } catch { /* browser build */ }
-let _maEntityDir = null
-for (const v of ['1.21.1', '1.20.1', '1.19.4']) {
-  try { _maEntityDir = _path.join(require('minecraft-assets')(v).directory, 'entity'); break } catch { /* try next */ }
+// minecraft-assets entity dir for a version — the package auto-resolves to the NEAREST
+// bundled version (e.g. 1.21.3 -> 1.21.8), so we can pass the running server version straight
+// through and get matching assets. Cached; falls back down a list if the package is missing.
+const _maDirCache = {}
+function maEntityDir (version) {
+  const key = version || 'default'
+  if (_maDirCache[key] !== undefined) return _maDirCache[key]
+  let dir = null
+  try { dir = _path.join(require('minecraft-assets')(version).directory, 'entity') } catch {
+    for (const v of ['1.21.8', '1.21.1', '1.20.2', '1.19.1']) { try { dir = _path.join(require('minecraft-assets')(v).directory, 'entity'); break } catch { /* next */ } }
+  }
+  _maDirCache[key] = dir
+  return dir
 }
 const _forkPublic = _path.resolve(__dirname, '../../../public')
-// texture arg is e.g. "textures/1.16.4/entity/chest/normal.png" — resolve the real file,
-// preferring the current-version minecraft-assets entity dir over the pinned public set.
+// texture arg is "textures/<version>/entity/chest/normal.png" — resolve the real file for that
+// version from minecraft-assets, with the bundled 1.16.4 set as a last-resort fallback.
 function resolveEntityTexture (texture) {
   try {
-    const after = String(texture).split('/entity/')[1]
-    if (after && _maEntityDir) {
-      const f = _path.join(_maEntityDir, after)
-      if (_fs.existsSync(f)) return f
-    }
-    const pub = _path.join(_forkPublic, texture)
+    const s = String(texture)
+    const after = s.split('/entity/')[1]
+    if (!after) { const p0 = _path.join(_forkPublic, s); return _fs.existsSync(p0) ? p0 : null }
+    const m = s.match(/textures\/([^/]+)\/entity\//)
+    const dir = maEntityDir(m ? m[1] : undefined)
+    if (dir) { const f = _path.join(dir, after); if (_fs.existsSync(f)) return f }
+    const pub = _path.join(_forkPublic, 'textures', '1.16.4', 'entity', after)
     if (_fs.existsSync(pub)) return pub
   } catch { /* fall through */ }
   return null

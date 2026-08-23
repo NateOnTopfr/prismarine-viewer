@@ -22,7 +22,7 @@ function mcData (version) {
 const _assets = {}
 function assetsDir (version) {
   if (_assets[version] !== undefined) return _assets[version]
-  for (const v of [version, '1.21.1', '1.20.1', '1.19.4']) {
+  for (const v of [version, '1.21.8', '1.21.1', '1.20.2', '1.19.1']) {
     try { _assets[version] = require('minecraft-assets')(v).directory; return _assets[version] } catch { /* try next */ }
   }
   _assets[version] = null
@@ -94,7 +94,8 @@ function _bannerLayer (ctx, file, colorHex) {
 }
 function bannerTexture (version, baseColor, patterns) {
   const canvas = createCanvas(64, 64); const ctx = canvas.getContext('2d')
-  const base = path.join(_publicDir, 'textures', version, 'entity')
+  const ad = assetsDir(version)
+  const base = ad ? path.join(ad, 'entity') : path.join(_publicDir, 'textures', '1.16.4', 'entity')
   _bannerLayer(ctx, path.join(base, 'banner_base.png'), DYE[baseColor] !== undefined ? DYE[baseColor] : 0xffffff)
   for (const p of (patterns || [])) {
     const nm = String(p.pattern || '').replace(/^minecraft:/, '')
@@ -290,7 +291,7 @@ function getEntityMesh (entity, scene, version) {
 
   if (!mesh && entity.name) {
     try {
-      const e = new Entity('1.16.4', ENTITY_ALIASES[entity.name] || entity.name, scene)
+      const e = new Entity(version || '1.21.8', ENTITY_ALIASES[entity.name] || entity.name, scene)
       mesh = e.mesh
     } catch (err) {
       console.log(err)
@@ -384,6 +385,7 @@ class Entities {
   // (base + lid + lock, textured with the entity texture) at each such block, oriented by facing.
   async addBlockEntityModels (bot, center, radius) {
     if (!bot || !bot.findBlocks || !center) return
+    const version = this.version || '1.21.8' // the running server version — assets track it
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
     // Mob skulls → the mob's head cube. (player_head needs a skin fetch; dragon_head is a
@@ -421,7 +423,7 @@ class Entities {
       let profile
       try { profile = block.blockEntity && block.blockEntity.profile } catch {}
       let file = profile ? await resolveSkinFile(profile) : null
-      if (!file) { const d = assetsDir('1.21.1'); if (d) file = path.join(d, 'entity', 'player', 'wide', 'steve.png') }
+      if (!file) { const d = assetsDir(version); if (d) file = path.join(d, 'entity', 'player', 'wide', 'steve.png') }
       skinFiles[`${pos.x},${pos.y},${pos.z}`] = file
     }
     for (const pos of positions) {
@@ -436,7 +438,7 @@ class Entities {
       // (side.png / sherds), which the box-UV Entity system can't express. Sherds (per-face
       // pottery patterns from block.blockEntity.sherds) override the side texture per face.
       if (block.name === 'decorated_pot') {
-        const dir = assetsDir('1.21.1')
+        const dir = assetsDir(version)
         const load = (rel) => dir ? loadTextureSync(path.join(dir, 'entity', 'decorated_pot', rel)) : null
         const sideTex = load('decorated_pot_side.png')
         const baseTex = load('decorated_pot_base.png')
@@ -481,7 +483,7 @@ class Entities {
       const type = block.name.endsWith('_bed') ? `${block.name}_${props.part || 'foot'}`
         : isBanner ? 'banner' : isSkull ? SKULL[block.name] : block.name
       let mesh
-      try { mesh = new Entity('1.16.4', type, this.scene).mesh } catch { continue }
+      try { mesh = new Entity(version, type, this.scene).mesh } catch { continue }
       if (!mesh) continue
       mesh.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
       if (isBanner) {
@@ -489,7 +491,7 @@ class Entities {
         const baseColor = block.name.replace('_wall_banner', '').replace('_banner', '')
         let patterns = []
         try { patterns = (block.blockEntity && block.blockEntity.patterns) || [] } catch {}
-        const tex = bannerTexture('1.16.4', baseColor, patterns)
+        const tex = bannerTexture(version, baseColor, patterns)
         mesh.traverse((o) => { if (o.material) { o.material.map = tex; o.material.needsUpdate = true } })
         mesh.scale.set(2 / 3, 2 / 3, 2 / 3) // vanilla banner model is rendered at 2/3 scale
         if (block.name.endsWith('_wall_banner')) {
