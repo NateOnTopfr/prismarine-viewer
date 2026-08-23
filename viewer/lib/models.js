@@ -408,7 +408,7 @@ function fallbackShape (name) {
 function hasEntityModel (name) {
   return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
     name === 'conduit' || name === 'bell' || name.endsWith('shulker_box') ||
-    name.endsWith('_bed')
+    name.endsWith('_bed') || name.endsWith('banner')
 }
 
 function renderFallbackCube (world, cursor, model, attr, block, biome) {

@@ -49,6 +49,46 @@ function firstExisting (dir, subs, name) {
   for (const s of subs) { const f = path.join(dir, s, name + '.png'); if (fs.existsSync(f)) return f }
   return null
 }
+
+// --- Banner heraldry: composite the base cloth + each NBT pattern layer (tinted by its
+// dye colour) onto one canvas, exactly like the vanilla BannerRenderer, so a banner shows
+// its real pattern instead of a plain box. Data comes from block.blockEntity.patterns. ---
+const DYE = {
+  white: 0xf9fffe, orange: 0xf9801d, magenta: 0xc74ebd, light_blue: 0x3ab3da,
+  yellow: 0xfed83d, lime: 0x80c71f, pink: 0xf38baa, gray: 0x474f52,
+  light_gray: 0x9d9d97, cyan: 0x169c9c, purple: 0x8932b8, blue: 0x3c44aa,
+  brown: 0x835432, green: 0x5e7c16, red: 0xb02e26, black: 0x1d1d21
+}
+const _publicDir = path.resolve(__dirname, '../../public')
+function _bannerLayer (ctx, file, colorHex) {
+  try {
+    const img = new Image(); img.src = fs.readFileSync(file)
+    const w = img.width || 64, h = img.height || 64
+    const tmp = createCanvas(w, h); const tctx = tmp.getContext('2d')
+    tctx.drawImage(img, 0, 0)
+    const data = tctx.getImageData(0, 0, w, h)
+    const r = ((colorHex >> 16) & 255) / 255, g = ((colorHex >> 8) & 255) / 255, b = (colorHex & 255) / 255
+    const px = data.data
+    for (let i = 0; i < px.length; i += 4) { px[i] *= r; px[i + 1] *= g; px[i + 2] *= b }
+    tctx.putImageData(data, 0, 0)
+    ctx.drawImage(tmp, 0, 0)
+  } catch { /* missing pattern texture — skip that layer */ }
+}
+function bannerTexture (version, baseColor, patterns) {
+  const canvas = createCanvas(64, 64); const ctx = canvas.getContext('2d')
+  const base = path.join(_publicDir, 'textures', version, 'entity')
+  _bannerLayer(ctx, path.join(base, 'banner_base.png'), DYE[baseColor] !== undefined ? DYE[baseColor] : 0xffffff)
+  for (const p of (patterns || [])) {
+    const nm = String(p.pattern || '').replace(/^minecraft:/, '')
+    if (!nm) continue
+    const col = DYE[p.color] !== undefined ? DYE[p.color] : 0xffffff
+    _bannerLayer(ctx, path.join(base, 'banner', nm + '.png'), col)
+  }
+  const tex = new THREE.Texture(canvas)
+  tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
+  tex.flipY = false; tex.needsUpdate = true
+  return tex
+}
 function itemTexture (version, itemId) {
   const d = mcData(version); if (!d) return null
   const it = d.items && d.items[itemId]
@@ -265,7 +305,7 @@ class Entities {
     if (!bot || !bot.findBlocks || !center) return
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
-    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box') || n.endsWith('_bed'))
+    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
     let positions = []
     try {
       positions = bot.findBlocks({
@@ -285,15 +325,33 @@ class Entities {
       if (!block) continue
       let props = {}
       try { props = (block.getProperties && block.getProperties()) || {} } catch {}
+      const isBanner = block.name.endsWith('banner')
       // Beds are two blocks; each half has its own geometry (pillow vs foot), keyed by `part`.
-      const type = block.name.endsWith('_bed') ? `${block.name}_${props.part || 'foot'}` : block.name
+      // Banners share one geometry; the per-instance heraldry goes on as a composited texture.
+      const type = block.name.endsWith('_bed') ? `${block.name}_${props.part || 'foot'}`
+        : isBanner ? 'banner' : block.name
       let mesh
       try { mesh = new Entity('1.16.4', type, this.scene).mesh } catch { continue }
       if (!mesh) continue
       mesh.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
-      // Chests + beds carry a horizontal `facing` → rotate the model to match. Shulker boxes'
-      // `facing` is which way the lid opens (often up); conduits/bells render upright.
-      if (chests.has(block.name) || block.name.endsWith('_bed')) {
+      if (isBanner) {
+        // Composite base cloth + NBT pattern layers, then swap it onto the flag material.
+        const baseColor = block.name.replace('_wall_banner', '').replace('_banner', '')
+        let patterns = []
+        try { patterns = (block.blockEntity && block.blockEntity.patterns) || [] } catch {}
+        const tex = bannerTexture('1.16.4', baseColor, patterns)
+        mesh.traverse((o) => { if (o.material) { o.material.map = tex; o.material.needsUpdate = true } })
+        mesh.scale.set(2 / 3, 2 / 3, 2 / 3) // vanilla banner model is rendered at 2/3 scale
+        if (block.name.endsWith('_wall_banner')) {
+          mesh.position.set(pos.x + 0.5, pos.y + 0.28, pos.z + 0.5)
+          mesh.rotation.y = facingRot[props.facing] !== undefined ? facingRot[props.facing] : 0
+        } else {
+          const rot = parseInt(props.rotation || '0', 10) || 0
+          mesh.rotation.y = -rot * (Math.PI * 2 / 16)
+        }
+      } else if (chests.has(block.name) || block.name.endsWith('_bed')) {
+        // Chests + beds carry a horizontal `facing` → rotate the model to match. Shulker boxes'
+        // `facing` is which way the lid opens (often up); conduits/bells render upright.
         mesh.rotation.y = facingRot[props.facing] !== undefined ? facingRot[props.facing] : 0
       }
       this.entities[key] = mesh
