@@ -245,6 +245,18 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
       // whose neighbor sits below y=0, breaking all terrain in 1.18+ negative-Y worlds.)
     }
 
+    // Bake the real light level of the air this face is exposed to (server sky + block light),
+    // once per face. Open faces read skyLight 15; enclosed read low; emitters raise blockLight.
+    // Floored so nothing is pure black. skyLight assumes daytime (renders are day by default).
+    let faceLight = 1
+    {
+      const lb = world.getBlock(cursor.plus(new Vec3(...dir)))
+      const sky = (lb && lb.skyLight != null) ? lb.skyLight : 15
+      const blk = (lb && lb.light != null) ? lb.light : 0
+      const lvl = Math.min(15, Math.max(blk, sky))
+      faceLight = 0.12 + 0.88 * (lvl / 15)
+    }
+
     const minx = element.from[0]
     const miny = element.from[1]
     const minz = element.from[2]
@@ -357,6 +369,7 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
         aos.push(ao)
       }
 
+      light *= faceLight // combine ambient occlusion with the real baked light level
       attr.colors.push(tint[0] * light, tint[1] * light, tint[2] * light)
     }
 

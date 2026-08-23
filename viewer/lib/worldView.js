@@ -173,9 +173,89 @@ class WorldView extends EventEmitter {
     if (dx < this.viewDistance && dz < this.viewDistance) {
       const column = await this.world.getColumnAt(pos)
       if (column) {
+        this._applyLight(column) // compute skylight/blocklight ourselves (server omits it for placed blocks)
         const chunk = column.toJson()
         this.emitter.emit('loadChunk', { x: pos.x, z: pos.z, chunk })
         this.loadedChunks[`${pos.x},${pos.z}`] = true
+      }
+    }
+  }
+
+  // Recompute lighting for one column, in place, before it's serialised to the mesher. The server
+  // does NOT send skyLight to a spectating bot for blocks placed via setblock/fill, so without
+  // this our builds render pitch black. Derived from block geometry (reliable): straight-down
+  // skylight (open sky = 15, attenuated through cover) + a block-light flood-fill from emitters
+  // within the column. Bounded to `this.lightBand` (a Y range around the shot) to stay cheap;
+  // needs `this.mcData` (blocksByStateId → filterLight/emitLight). No-op if either is unset.
+  _applyLight (col) {
+    const md = this.mcData
+    const band = this.lightBand
+    if (!md || !md.blocksByStateId || !band || typeof col.setSkyLight !== 'function') return
+    const yBot = band[0], yTop = band[1]
+    const Hy = yTop - yBot + 1
+    if (Hy <= 0) return
+    const cache = this._lightInfoCache || (this._lightInfoCache = {})
+    const info = (sid) => {
+      let v = cache[sid]
+      if (v === undefined) {
+        const b = md.blocksByStateId[sid]
+        v = { f: b ? (b.filterLight == null ? 15 : b.filterLight) : 15, e: b ? (b.emitLight || 0) : 0 }
+        cache[sid] = v
+      }
+      return v
+    }
+    const WD = 256
+    const idx = (x, y, z) => ((y - yBot) * 16 + z) * 16 + x
+    const filter = new Uint8Array(16 * Hy * 16)
+    const blk = new Uint8Array(16 * Hy * 16)
+    const p = new Vec3(0, 0, 0)
+    let emitters = []
+    // Skylight per (x,z) column + record filter grid + emitters.
+    for (let x = 0; x < 16; x++) {
+      for (let z = 0; z < 16; z++) {
+        let level = 15
+        for (let y = yTop; y >= yBot; y--) {
+          p.set(x, y, z)
+          let sid = 0
+          try { sid = col.getBlockStateId(p) } catch { sid = 0 }
+          const inf = sid ? info(sid) : null
+          const f = inf ? inf.f : 0
+          const i = idx(x, y, z)
+          filter[i] = f
+          level = level - f; if (level < 0) level = 0
+          try { col.setSkyLight(p, level) } catch { /* skip */ }
+          if (inf && inf.e > 0) { blk[i] = inf.e; emitters.push(i) }
+        }
+      }
+    }
+    // Block-light flood-fill within the column from its emitters.
+    while (emitters.length) {
+      const next = []
+      for (const i of emitters) {
+        const lvl = blk[i]
+        if (lvl <= 1) continue
+        const y = (i / WD) | 0
+        const rem = i - y * WD
+        const z = (rem / 16) | 0
+        const x = rem - z * 16
+        const spread = (ni) => { if (filter[ni] >= 15) return; const nl = lvl - 1 - filter[ni]; if (nl > blk[ni]) { blk[ni] = nl; next.push(ni) } }
+        if (x > 0) spread(i - 1)
+        if (x < 15) spread(i + 1)
+        if (z > 0) spread(i - 16)
+        if (z < 15) spread(i + 16)
+        if (y > 0) spread(i - WD)
+        if (y < Hy - 1) spread(i + WD)
+      }
+      emitters = next
+    }
+    for (let i = 0; i < blk.length; i++) {
+      if (blk[i] > 0) {
+        const y = (i / WD) | 0
+        const rem = i - y * WD
+        const z = (rem / 16) | 0
+        const x = rem - z * 16
+        p.set(x, y + yBot, z)
+        try { col.setBlockLight(p, blk[i]) } catch { /* skip */ }
       }
     }
   }

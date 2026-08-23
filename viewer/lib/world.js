@@ -71,6 +71,11 @@ class World {
 
     const block = this.blockCache[stateId]
     block.position = loc
+    // Light is per-POSITION, not per-stateId — refresh it on the shared cached block so the
+    // mesher's light bake reads the right value (without this every air neighbour returned the
+    // first-seen air block's stale skyLight, baking whole chunks dark).
+    block.skyLight = column.getSkyLight(locInChunk)
+    block.light = column.getBlockLight(locInChunk)
     block.biome = this.biomeCache[column.getBiome(locInChunk)]
     if (block.biome === undefined) {
       block.biome = this.biomeCache[1]
