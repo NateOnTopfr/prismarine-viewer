@@ -7,8 +7,20 @@ const EventEmitter = require('events')
 // entity metadata shapes vary by version.
 function flattenText (c) {
   if (c == null) return undefined
-  if (typeof c === 'string') return c
+  if (typeof c === 'string') {
+    // A metadata string is often itself a JSON chat component (text_display) — unwrap it.
+    const t = c.trim()
+    if (t.startsWith('{') || (t.startsWith('"') && t.endsWith('"'))) {
+      try { return flattenText(JSON.parse(t)) } catch { /* plain string */ }
+    }
+    return c
+  }
   if (Array.isArray(c)) return c.map(flattenText).filter(Boolean).join('') || undefined
+  // mineflayer wraps typed metadata as {type,value}; unwrap common shapes.
+  if (typeof c.value === 'string' && (c.type === 'string' || c.text === undefined)) {
+    const inner = flattenText(c.value)
+    if (inner) return inner
+  }
   let s = ''
   if (typeof c.text === 'string') s = c.text
   else if (c.text && typeof c.text.value === 'string') s = c.text.value
@@ -28,11 +40,43 @@ function displayNameOf (e) {
   return flattenText(cn)
 }
 
+function numOf (v) {
+  if (v == null) return undefined
+  if (typeof v === 'number') return v
+  if (typeof v === 'string') { const n = Number(v); return Number.isFinite(n) ? n : undefined }
+  if (typeof v.value === 'number') return v.value
+  return undefined
+}
+
+// Numeric item id from a Slot-shaped metadata value ({itemId,itemCount} / nested).
+function itemIdOf (v) {
+  if (v == null) return undefined
+  if (typeof v.itemId === 'number') return v.itemCount === 0 ? undefined : v.itemId
+  if (v.value) return itemIdOf(v.value)
+  return undefined
+}
+
+// Extract the {x,y,z} of a display-entity scale vector metadata (index 12), if present.
+function scaleOf (v) {
+  if (v && typeof v.x === 'number') return { x: v.x, y: v.y, z: v.z }
+  if (v && v.value) return scaleOf(v.value)
+  return undefined
+}
+
 function entityPayload (e) {
-  return {
+  const p = {
     id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height,
     username: e.username, customName: displayNameOf(e)
   }
+  const m = e.metadata || []
+  switch (e.name) {
+    case 'text_display': p.customName = flattenText(m[23]) || p.customName; break
+    case 'item_display': p.item = itemIdOf(m[23]); break
+    case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); break
+    case 'item': p.item = itemIdOf(m[8]); break
+    case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); break
+  }
+  return p
 }
 
 class WorldView extends EventEmitter {
