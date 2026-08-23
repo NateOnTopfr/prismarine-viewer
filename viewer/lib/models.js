@@ -407,7 +407,8 @@ function fallbackShape (name) {
 // them, or the box z-fights inside the model.
 function hasEntityModel (name) {
   return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
-    name === 'conduit' || name === 'bell' || name.endsWith('shulker_box')
+    name === 'conduit' || name === 'bell' || name.endsWith('shulker_box') ||
+    name.endsWith('_bed')
 }
 
 function renderFallbackCube (world, cursor, model, attr, block, biome) {

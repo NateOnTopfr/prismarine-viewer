@@ -265,7 +265,7 @@ class Entities {
     if (!bot || !bot.findBlocks || !center) return
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
-    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box'))
+    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box') || n.endsWith('_bed'))
     let positions = []
     try {
       positions = bot.findBlocks({
@@ -283,16 +283,18 @@ class Entities {
       let block
       try { block = bot.blockAt(pos) } catch { continue }
       if (!block) continue
+      let props = {}
+      try { props = (block.getProperties && block.getProperties()) || {} } catch {}
+      // Beds are two blocks; each half has its own geometry (pillow vs foot), keyed by `part`.
+      const type = block.name.endsWith('_bed') ? `${block.name}_${props.part || 'foot'}` : block.name
       let mesh
-      try { mesh = new Entity('1.16.4', block.name, this.scene).mesh } catch { continue }
+      try { mesh = new Entity('1.16.4', type, this.scene).mesh } catch { continue }
       if (!mesh) continue
       mesh.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
-      // Chests carry a horizontal `facing` → rotate the model to match. Shulker boxes'
-      // `facing` is which way the lid opens (often up); render them upright.
-      if (chests.has(block.name)) {
-        let facing
-        try { facing = block.getProperties && block.getProperties().facing } catch {}
-        mesh.rotation.y = facingRot[facing] !== undefined ? facingRot[facing] : 0
+      // Chests + beds carry a horizontal `facing` → rotate the model to match. Shulker boxes'
+      // `facing` is which way the lid opens (often up); conduits/bells render upright.
+      if (chests.has(block.name) || block.name.endsWith('_bed')) {
+        mesh.rotation.y = facingRot[props.facing] !== undefined ? facingRot[props.facing] : 0
       }
       this.entities[key] = mesh
       this.scene.add(mesh)
