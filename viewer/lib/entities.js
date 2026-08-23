@@ -258,6 +258,41 @@ class Entities {
     }
   }
 
+  // Block-entities that have a real (non-cube) model + entity texture — chests, etc. The world
+  // mesher only draws them as a plain box, so here we overlay the true bedrock-geometry model
+  // (base + lid + lock, textured with the entity texture) at each such block, oriented by facing.
+  addBlockEntityModels (bot, center, radius) {
+    if (!bot || !bot.findBlocks || !center) return
+    const modeled = new Set(['chest', 'trapped_chest', 'ender_chest'])
+    let positions = []
+    try {
+      positions = bot.findBlocks({
+        point: new Vec3(center[0], center[1], center[2]),
+        matching: (b) => b && b.name && modeled.has(b.name),
+        maxDistance: Math.min(radius || 40, 64),
+        count: 200
+      })
+    } catch (e) { return }
+    // Model front (the lock) is on the -Z / north face; rotate so it faces the block's `facing`.
+    const facingRot = { north: 0, south: Math.PI, west: Math.PI / 2, east: -Math.PI / 2 }
+    for (const pos of positions) {
+      const key = `be:${pos.x},${pos.y},${pos.z}`
+      if (this.entities[key]) continue
+      let block
+      try { block = bot.blockAt(pos) } catch { continue }
+      if (!block) continue
+      let mesh
+      try { mesh = new Entity('1.16.4', block.name, this.scene).mesh } catch { continue }
+      if (!mesh) continue
+      mesh.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
+      let facing
+      try { facing = block.getProperties && block.getProperties().facing } catch {}
+      mesh.rotation.y = facingRot[facing] !== undefined ? facingRot[facing] : 0
+      this.entities[key] = mesh
+      this.scene.add(mesh)
+    }
+  }
+
   clear () {
     for (const mesh of Object.values(this.entities)) {
       this.scene.remove(mesh)

@@ -41,6 +41,10 @@ class Viewer {
     if (this.entities && this.entities.addSignLabels) this.entities.addSignLabels(bot, center, radius)
   }
 
+  addBlockEntityModels (bot, center, radius) {
+    if (this.entities && this.entities.addBlockEntityModels) this.entities.addBlockEntityModels(bot, center, radius)
+  }
+
   setVersion (version) {
     version = getVersion(version)
     if (version === null) {
