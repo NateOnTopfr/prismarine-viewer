@@ -2,6 +2,7 @@ const THREE = require('three')
 const TWEEN = require('@tweenjs/tween.js')
 const fs = require('fs')
 const path = require('path')
+const { Vec3 } = require('vec3')
 
 const Entity = require('./entity/Entity')
 const { dispose3 } = require('./dispose')
@@ -79,32 +80,61 @@ const ENTITY_ALIASES = {
   illusioner: 'pillager'
 }
 
-// A billboarded text label (player username OR custom name / hologram text). Reused so
-// holograms (armor stands / named entities) actually show their text, not just a box.
+// A billboarded text label (player username / hologram / custom name / SIGN text). Handles
+// multiple lines (split on \n) so signs show all four lines. Reused everywhere text floats.
 function makeTextSprite (text, height) {
   const clean = String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1') // strip §-codes + wrapping quotes
-  if (!clean.trim()) return null
-  const pad = 16
+  const lines = clean.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l, i, a) => l.trim() || (i < a.length - 1))
+  const nonEmpty = lines.filter((l) => l.trim())
+  if (!nonEmpty.length) return null
+  const fpt = 48; const lineH = 66; const pad = 16
   const probe = createCanvas(8, 8).getContext('2d')
-  probe.font = '48pt Arial'
-  const w = Math.min(1200, Math.ceil(probe.measureText(clean).width) + pad * 2)
-  const canvas = createCanvas(w, 80)
+  probe.font = `${fpt}pt Arial`
+  const w = Math.min(1400, Math.max(...nonEmpty.map((l) => Math.ceil(probe.measureText(l).width))) + pad * 2)
+  const h = lineH * nonEmpty.length + pad
+  const canvas = createCanvas(w, h)
   const ctx = canvas.getContext('2d')
-  ctx.font = '48pt Arial'
+  ctx.font = `${fpt}pt Arial`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  // outline for legibility against any background
   ctx.lineWidth = 8
   ctx.strokeStyle = 'rgba(0,0,0,0.85)'
-  ctx.strokeText(clean, w / 2, 44)
   ctx.fillStyle = '#ffffff'
-  ctx.fillText(clean, w / 2, 44)
+  nonEmpty.forEach((line, i) => {
+    const y = pad / 2 + lineH * (i + 0.5)
+    ctx.strokeText(line, w / 2, y)
+    ctx.fillText(line, w / 2, y)
+  })
   const tex = new THREE.Texture(canvas)
   tex.needsUpdate = true
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }))
-  sprite.scale.set((w / 80) * 0.5, 0.5, 1) // keep aspect; ~0.5 block tall
+  const sh = 0.28 * nonEmpty.length // ~0.28 block per line
+  sprite.scale.set((w / h) * sh, sh, 1)
   sprite.position.y += (height || 1.8) + 0.5
   return sprite
+}
+
+// Extract sign text (all non-empty lines, joined by \n) from a mineflayer block.
+function signTextOf (block) {
+  if (!block) return null
+  if (typeof block.signText === 'string' && block.signText.trim()) return block.signText.replace(/\n+$/, '')
+  const be = block.blockEntity
+  if (!be) return null
+  const unwrap = (v) => (v && v.value !== undefined && typeof v.value !== 'string' ? v.value : v)
+  const ft = unwrap(be.front_text) || unwrap(be && be.value && be.value.front_text)
+  let msgs = ft && (ft.messages !== undefined ? unwrap(ft.messages) : undefined)
+  if (msgs && msgs.value) msgs = msgs.value // nbt list wrapper
+  const arr = Array.isArray(msgs) ? msgs : (Array.isArray(be.Text1 ? [be.Text1, be.Text2, be.Text3, be.Text4] : null) ? [be.Text1, be.Text2, be.Text3, be.Text4] : null)
+  if (!Array.isArray(arr)) return null
+  const flat = (m) => {
+    let s = typeof m === 'string' ? m : (m && (m.value !== undefined ? m.value : m.text))
+    if (typeof s !== 'string') return ''
+    const t = s.trim()
+    if (t.startsWith('{') || (t.startsWith('"') && t.endsWith('"'))) { try { const j = JSON.parse(t); return typeof j === 'string' ? j : (j.text || '') } catch { return s } }
+    return s
+  }
+  const lines = arr.map(flat).map((s) => String(s).replace(/§./g, '').trimEnd())
+  return lines.some((l) => l.trim()) ? lines.join('\n') : null
 }
 
 function getEntityMesh (entity, scene, version) {
@@ -198,6 +228,34 @@ class Entities {
 
   setVersion (version) {
     this.version = version
+  }
+
+  // Find signs near `center` and float their text as billboarded labels — so shop/menu/
+  // wayfinding signs are readable in a render. Uses bot.findBlocks (efficient) not a scan.
+  addSignLabels (bot, center, radius) {
+    if (!bot || !bot.findBlocks || !center) return
+    let positions = []
+    try {
+      positions = bot.findBlocks({
+        point: new Vec3(center[0], center[1], center[2]),
+        matching: (b) => b && b.name && b.name.endsWith('sign'),
+        maxDistance: Math.min(radius || 40, 64),
+        count: 200
+      })
+    } catch (e) { return }
+    for (const pos of positions) {
+      const key = `sign:${pos.x},${pos.y},${pos.z}`
+      if (this.entities[key]) continue
+      let block
+      try { block = bot.blockAt(pos) } catch { continue }
+      const text = signTextOf(block)
+      if (!text) continue
+      const sprite = makeTextSprite(text, 0)
+      if (!sprite) continue
+      sprite.position.set(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
+      this.entities[key] = sprite
+      this.scene.add(sprite)
+    }
   }
 
   clear () {
