@@ -305,7 +305,17 @@ class Entities {
     if (!bot || !bot.findBlocks || !center) return
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
-    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
+    // Mob skulls → the mob's head cube. (player_head needs a skin fetch; dragon_head is a
+    // multi-part model — both left as boxes for now.)
+    const SKULL = {
+      skeleton_skull: 'skeleton_skull', skeleton_wall_skull: 'skeleton_skull',
+      wither_skeleton_skull: 'wither_skeleton_skull', wither_skeleton_wall_skull: 'wither_skeleton_skull',
+      zombie_head: 'zombie_head', zombie_wall_head: 'zombie_head',
+      creeper_head: 'creeper_head', creeper_wall_head: 'creeper_head',
+      piglin_head: 'piglin_head', piglin_wall_head: 'piglin_head'
+    }
+    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || SKULL[n] ||
+      n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
     let positions = []
     try {
       positions = bot.findBlocks({
@@ -326,10 +336,12 @@ class Entities {
       let props = {}
       try { props = (block.getProperties && block.getProperties()) || {} } catch {}
       const isBanner = block.name.endsWith('banner')
+      const isSkull = !!SKULL[block.name]
+      const isWallSkull = isSkull && block.name.includes('wall')
       // Beds are two blocks; each half has its own geometry (pillow vs foot), keyed by `part`.
       // Banners share one geometry; the per-instance heraldry goes on as a composited texture.
       const type = block.name.endsWith('_bed') ? `${block.name}_${props.part || 'foot'}`
-        : isBanner ? 'banner' : block.name
+        : isBanner ? 'banner' : isSkull ? SKULL[block.name] : block.name
       let mesh
       try { mesh = new Entity('1.16.4', type, this.scene).mesh } catch { continue }
       if (!mesh) continue
@@ -346,6 +358,18 @@ class Entities {
           mesh.position.set(pos.x + 0.5, pos.y + 0.28, pos.z + 0.5)
           mesh.rotation.y = facingRot[props.facing] !== undefined ? facingRot[props.facing] : 0
         } else {
+          const rot = parseInt(props.rotation || '0', 10) || 0
+          mesh.rotation.y = -rot * (Math.PI * 2 / 16)
+        }
+      } else if (isSkull) {
+        if (isWallSkull) {
+          // Mounted on a wall face, centred vertically, offset toward the wall.
+          const f = props.facing
+          const off = { north: [0, 0.25, 0.25], south: [0, 0.25, -0.25], west: [0.25, 0.25, 0], east: [-0.25, 0.25, 0] }[f] || [0, 0.25, 0]
+          mesh.position.set(pos.x + 0.5 + off[0], pos.y + off[1], pos.z + 0.5 + off[2])
+          mesh.rotation.y = facingRot[f] !== undefined ? facingRot[f] : 0
+        } else {
+          // Floor skull: sits on the block, rotated by its 0..15 rotation state.
           const rot = parseInt(props.rotation || '0', 10) || 0
           mesh.rotation.y = -rot * (Math.PI * 2 / 16)
         }

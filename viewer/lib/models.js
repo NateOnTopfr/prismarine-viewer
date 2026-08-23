@@ -405,10 +405,14 @@ function fallbackShape (name) {
 // Block-entities we draw as true entity-texture models via the entity overlay pass
 // (Entities.addBlockEntityModels) — the mesher must NOT also draw a stand-in box for
 // them, or the box z-fights inside the model.
+const MODELED_HEADS = new Set([
+  'skeleton_skull', 'skeleton_wall_skull', 'wither_skeleton_skull', 'wither_skeleton_wall_skull',
+  'zombie_head', 'zombie_wall_head', 'creeper_head', 'creeper_wall_head', 'piglin_head', 'piglin_wall_head'
+])
 function hasEntityModel (name) {
   return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
     name === 'conduit' || name === 'bell' || name.endsWith('shulker_box') ||
-    name.endsWith('_bed') || name.endsWith('banner')
+    name.endsWith('_bed') || name.endsWith('banner') || MODELED_HEADS.has(name)
 }
 
 function renderFallbackCube (world, cursor, model, attr, block, biome) {
