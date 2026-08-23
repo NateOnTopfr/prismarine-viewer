@@ -49,6 +49,24 @@ function firstExisting (dir, subs, name) {
   for (const s of subs) { const f = path.join(dir, s, name + '.png'); if (fs.existsSync(f)) return f }
   return null
 }
+// Like loadTextureSync but NOT cached — a fresh THREE.Texture per call. Cached texture objects
+// reused across meshes upload unreliably in the headless GL context (heads rendered black/white);
+// a fresh texture (as banners do) is stable. Use for per-instance skins. flipY off for box-UV.
+function loadTextureFresh (file) {
+  try {
+    const img = new Image(); img.src = fs.readFileSync(file)
+    // Skins are 64 wide; legacy skins are 64x32. Pad to a square 64x64 canvas (head/hat live in
+    // the top half of both) so the head geometry's 64x64 UVs map to the correct rows.
+    const w = img.width || 64
+    const size = Math.max(w, img.height || 64)
+    const c = createCanvas(size, size)
+    c.getContext('2d').drawImage(img, 0, 0)
+    const tex = new THREE.Texture(c)
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
+    tex.flipY = false; tex.needsUpdate = true
+    return tex
+  } catch { return null }
+}
 
 // --- Banner heraldry: composite the base cloth + each NBT pattern layer (tinted by its
 // dye colour) onto one canvas, exactly like the vanilla BannerRenderer, so a banner shows
@@ -88,6 +106,69 @@ function bannerTexture (version, baseColor, patterns) {
   tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
   tex.flipY = false; tex.needsUpdate = true
   return tex
+}
+
+// --- Player-head skins: resolve a head's profile to a real skin PNG (disk-cached). Works
+// for an online server (skin embedded in profile.properties.textures) AND offline/name-only
+// (Mojang API name->uuid->skin). Falls back to the steve placeholder if unreachable. ---
+const _skinCache = {}
+function uuidHex (id) {
+  if (typeof id === 'string') return id.replace(/-/g, '')
+  if (Array.isArray(id) && id.length === 4) return id.map((n) => (n >>> 0).toString(16).padStart(8, '0')).join('')
+  return null
+}
+async function _texturesProp (obj) {
+  const tp = ((obj && obj.properties) || []).find((p) => p.name === 'textures')
+  return tp && tp.value
+}
+async function resolveSkinFile (profile) {
+  try {
+    if (!profile || typeof fetch !== 'function') return null
+    // 1) Skin embedded in the profile — online servers + custom-skin (head-database) heads.
+    let b64 = null
+    const props = profile.properties
+    if (props) { const t = Array.isArray(props) ? props.find((p) => p.name === 'textures') : props.textures; b64 = t && (t.value || t) }
+    let cacheKey = null
+    // 2) Resolve by NAME (gets the real premium skin) — the offline server hands us an offline
+    //    UUID that the session server won't know, so name is more reliable than profile.id here.
+    if (!b64 && profile.name) {
+      cacheKey = 'name:' + profile.name
+      if (_skinCache[cacheKey] !== undefined) return _skinCache[cacheKey]
+      try {
+        const r = await fetch('https://api.mojang.com/users/profiles/minecraft/' + encodeURIComponent(profile.name))
+        if (r.ok) {
+          const uuid = (await r.json()).id
+          const r2 = await fetch('https://sessionserver.mojang.com/session/minecraft/profile/' + uuid)
+          if (r2.ok) b64 = await _texturesProp(await r2.json())
+        }
+      } catch { /* network best-effort */ }
+    }
+    // 3) Fall back to the profile UUID (premium/online servers that omit embedded textures).
+    if (!b64) {
+      const uuid = uuidHex(profile.id)
+      if (uuid) {
+        cacheKey = cacheKey || ('uuid:' + uuid)
+        if (_skinCache[cacheKey] !== undefined) return _skinCache[cacheKey]
+        try { const r = await fetch('https://sessionserver.mojang.com/session/minecraft/profile/' + uuid); if (r.ok) b64 = await _texturesProp(await r.json()) } catch { /* best-effort */ }
+      }
+    }
+    if (!b64) { if (cacheKey) _skinCache[cacheKey] = null; return null }
+    const meta = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'))
+    const url = meta.textures && meta.textures.SKIN && meta.textures.SKIN.url
+    if (!url) { if (cacheKey) _skinCache[cacheKey] = null; return null }
+    const fileKey = 'file:' + url.split('/').pop()
+    if (_skinCache[fileKey] !== undefined) { if (cacheKey) _skinCache[cacheKey] = _skinCache[fileKey]; return _skinCache[fileKey] }
+    const resp = await fetch(url)
+    if (!resp.ok) { if (cacheKey) _skinCache[cacheKey] = null; return null }
+    const buf = Buffer.from(await resp.arrayBuffer())
+    const dir = path.join(_publicDir, 'textures', 'skins-cache')
+    fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, url.split('/').pop() + '.png')
+    fs.writeFileSync(file, buf)
+    _skinCache[fileKey] = file
+    if (cacheKey) _skinCache[cacheKey] = file
+    return file
+  } catch { return null }
 }
 function itemTexture (version, itemId) {
   const d = mcData(version); if (!d) return null
@@ -301,7 +382,7 @@ class Entities {
   // Block-entities that have a real (non-cube) model + entity texture — chests, etc. The world
   // mesher only draws them as a plain box, so here we overlay the true bedrock-geometry model
   // (base + lid + lock, textured with the entity texture) at each such block, oriented by facing.
-  addBlockEntityModels (bot, center, radius) {
+  async addBlockEntityModels (bot, center, radius) {
     if (!bot || !bot.findBlocks || !center) return
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
@@ -312,7 +393,8 @@ class Entities {
       wither_skeleton_skull: 'wither_skeleton_skull', wither_skeleton_wall_skull: 'wither_skeleton_skull',
       zombie_head: 'zombie_head', zombie_wall_head: 'zombie_head',
       creeper_head: 'creeper_head', creeper_wall_head: 'creeper_head',
-      piglin_head: 'piglin_head', piglin_wall_head: 'piglin_head'
+      piglin_head: 'piglin_head', piglin_wall_head: 'piglin_head',
+      player_head: 'player_head', player_wall_head: 'player_head'
     }
     const isModeled = (n) => n && (chests.has(n) || upright.has(n) || SKULL[n] ||
       n === 'decorated_pot' || n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
@@ -327,6 +409,20 @@ class Entities {
     } catch (e) { return }
     // Model front (the lock) is on the -Z / north face; rotate so it faces the block's `facing`.
     const facingRot = { north: 0, south: Math.PI, west: Math.PI / 2, east: -Math.PI / 2 }
+    // Pre-pass: resolve player-head skins (async/network) to disk BEFORE building any mesh, so
+    // the mesh-building loop below is fully synchronous — awaiting a fetch interleaved between
+    // GL mesh operations destabilises the headless GL context (textures render black/white).
+    const skinFiles = {}
+    for (const pos of positions) {
+      let block
+      try { block = bot.blockAt(pos) } catch { continue }
+      if (!block || SKULL[block.name] !== 'player_head') continue
+      let profile
+      try { profile = block.blockEntity && block.blockEntity.profile } catch {}
+      let file = profile ? await resolveSkinFile(profile) : null
+      if (!file) { const d = assetsDir('1.21.1'); if (d) file = path.join(d, 'entity', 'player', 'wide', 'steve.png') }
+      skinFiles[`${pos.x},${pos.y},${pos.z}`] = file
+    }
     for (const pos of positions) {
       const key = `be:${pos.x},${pos.y},${pos.z}`
       if (this.entities[key]) continue
@@ -403,6 +499,13 @@ class Entities {
           mesh.rotation.y = -rot * (Math.PI * 2 / 16)
         }
       } else if (isSkull) {
+        // Player heads: apply the owner's real skin (pre-resolved to disk above), or steve for
+        // an owner-less head. Loaded synchronously here (no network) to keep GL ops contiguous.
+        if (type === 'player_head') {
+          const file = skinFiles[`${pos.x},${pos.y},${pos.z}`]
+          const tex = file && loadTextureFresh(file)
+          if (tex) mesh.traverse((o) => { if (o.material) { o.material.map = tex; o.material.needsUpdate = true } })
+        }
         if (isWallSkull) {
           // Mounted on a wall face, centred vertically, offset toward the wall.
           const f = props.facing

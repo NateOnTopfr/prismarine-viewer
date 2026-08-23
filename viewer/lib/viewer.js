@@ -42,7 +42,7 @@ class Viewer {
   }
 
   addBlockEntityModels (bot, center, radius) {
-    if (this.entities && this.entities.addBlockEntityModels) this.entities.addBlockEntityModels(bot, center, radius)
+    if (this.entities && this.entities.addBlockEntityModels) return this.entities.addBlockEntityModels(bot, center, radius)
   }
 
   setVersion (version) {

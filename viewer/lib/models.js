@@ -407,7 +407,8 @@ function fallbackShape (name) {
 // them, or the box z-fights inside the model.
 const MODELED_HEADS = new Set([
   'skeleton_skull', 'skeleton_wall_skull', 'wither_skeleton_skull', 'wither_skeleton_wall_skull',
-  'zombie_head', 'zombie_wall_head', 'creeper_head', 'creeper_wall_head', 'piglin_head', 'piglin_wall_head'
+  'zombie_head', 'zombie_wall_head', 'creeper_head', 'creeper_wall_head', 'piglin_head', 'piglin_wall_head',
+  'player_head', 'player_wall_head'
 ])
 function hasEntityModel (name) {
   return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
