@@ -263,12 +263,13 @@ class Entities {
   // (base + lid + lock, textured with the entity texture) at each such block, oriented by facing.
   addBlockEntityModels (bot, center, radius) {
     if (!bot || !bot.findBlocks || !center) return
-    const modeled = new Set(['chest', 'trapped_chest', 'ender_chest'])
+    const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
+    const isModeled = (n) => n && (chests.has(n) || n.endsWith('shulker_box'))
     let positions = []
     try {
       positions = bot.findBlocks({
         point: new Vec3(center[0], center[1], center[2]),
-        matching: (b) => b && b.name && modeled.has(b.name),
+        matching: (b) => b && b.name && isModeled(b.name),
         maxDistance: Math.min(radius || 40, 64),
         count: 200
       })
@@ -285,9 +286,13 @@ class Entities {
       try { mesh = new Entity('1.16.4', block.name, this.scene).mesh } catch { continue }
       if (!mesh) continue
       mesh.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
-      let facing
-      try { facing = block.getProperties && block.getProperties().facing } catch {}
-      mesh.rotation.y = facingRot[facing] !== undefined ? facingRot[facing] : 0
+      // Chests carry a horizontal `facing` → rotate the model to match. Shulker boxes'
+      // `facing` is which way the lid opens (often up); render them upright.
+      if (chests.has(block.name)) {
+        let facing
+        try { facing = block.getProperties && block.getProperties().facing } catch {}
+        mesh.rotation.y = facingRot[facing] !== undefined ? facingRot[facing] : 0
+      }
       this.entities[key] = mesh
       this.scene.add(mesh)
     }

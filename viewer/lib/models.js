@@ -402,7 +402,16 @@ function fallbackShape (name) {
   return [{ from: [0, 0, 0], to: [16, 16, 16] }]                                     // default: full cube
 }
 
+// Block-entities we draw as true entity-texture models via the entity overlay pass
+// (Entities.addBlockEntityModels) — the mesher must NOT also draw a stand-in box for
+// them, or the box z-fights inside the model.
+function hasEntityModel (name) {
+  return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
+    name.endsWith('shulker_box')
+}
+
 function renderFallbackCube (world, cursor, model, attr, block, biome) {
+  if (hasEntityModel(block.name)) return
   const tex = model.textures && (model.textures.particle || model.textures.all || Object.values(model.textures)[0])
   if (!tex || tex.su === undefined) return
   const shape = fallbackShape(block.name)
