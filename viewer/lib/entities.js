@@ -315,7 +315,7 @@ class Entities {
       piglin_head: 'piglin_head', piglin_wall_head: 'piglin_head'
     }
     const isModeled = (n) => n && (chests.has(n) || upright.has(n) || SKULL[n] ||
-      n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
+      n === 'decorated_pot' || n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
     let positions = []
     try {
       positions = bot.findBlocks({
@@ -335,6 +335,47 @@ class Entities {
       if (!block) continue
       let props = {}
       try { props = (block.getProperties && block.getProperties()) || {} } catch {}
+      // Decorated pot: a manual mesh (body + neck) — its faces need a full per-face texture
+      // (side.png / sherds), which the box-UV Entity system can't express. Sherds (per-face
+      // pottery patterns from block.blockEntity.sherds) override the side texture per face.
+      if (block.name === 'decorated_pot') {
+        const dir = assetsDir('1.21.1')
+        const load = (rel) => dir ? loadTextureSync(path.join(dir, 'entity', 'decorated_pot', rel)) : null
+        const sideTex = load('decorated_pot_side.png')
+        const baseTex = load('decorated_pot_base.png')
+        let sherds = []
+        try { sherds = (block.blockEntity && block.blockEntity.sherds) || [] } catch {}
+        const s = Array.isArray(sherds) ? sherds : []
+        // A sherd item id → its face texture; "brick" (or empty) = the plain side.
+        const sherdTex = (id) => {
+          const n = String(id || '').replace(/^minecraft:/, '')
+          if (!n || n === 'brick') return sideTex
+          return load(n.replace(/_pottery_sherd$/, '_pottery_pattern') + '.png') || sideTex
+        }
+        const grp = new THREE.Object3D()
+        const faceMat = (tex) => new THREE.MeshLambertMaterial({ map: tex || null, color: tex ? 0xffffff : 0xa0522d, transparent: true, alphaTest: 0.1 })
+        // sherds NBT order is [back, left, right, front]. BoxGeometry material order is
+        // [+x east, -x west, +y top, -y bottom, +z south/front, -z north/back].
+        const bodyMats = [
+          faceMat(sherdTex(s[2])), // +x / right
+          faceMat(sherdTex(s[1])), // -x / left
+          faceMat(baseTex), // top
+          faceMat(baseTex), // bottom
+          faceMat(sherdTex(s[3])), // +z / front
+          faceMat(sherdTex(s[0])) // -z / back
+        ]
+        const body = new THREE.Mesh(new THREE.BoxGeometry(13 / 16, 14 / 16, 13 / 16), bodyMats)
+        body.position.set(0, 8 / 16, 0)
+        grp.add(body)
+        const neck = new THREE.Mesh(new THREE.BoxGeometry(10 / 16, 3 / 16, 10 / 16), faceMat(baseTex))
+        neck.position.set(0, 15.3 / 16, 0)
+        grp.add(neck)
+        grp.position.set(pos.x + 0.5, pos.y, pos.z + 0.5)
+        grp.rotation.y = facingRot[props.facing] !== undefined ? facingRot[props.facing] : 0
+        this.entities[key] = grp
+        this.scene.add(grp)
+        continue
+      }
       const isBanner = block.name.endsWith('banner')
       const isSkull = !!SKULL[block.name]
       const isWallSkull = isSkull && block.name.includes('wall')

@@ -412,7 +412,8 @@ const MODELED_HEADS = new Set([
 function hasEntityModel (name) {
   return name === 'chest' || name === 'trapped_chest' || name === 'ender_chest' ||
     name === 'conduit' || name === 'bell' || name.endsWith('shulker_box') ||
-    name.endsWith('_bed') || name.endsWith('banner') || MODELED_HEADS.has(name)
+    name.endsWith('_bed') || name.endsWith('banner') || name === 'decorated_pot' ||
+    MODELED_HEADS.has(name)
 }
 
 function renderFallbackCube (world, cursor, model, attr, block, biome) {
