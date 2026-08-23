@@ -394,7 +394,8 @@ class Entities {
       zombie_head: 'zombie_head', zombie_wall_head: 'zombie_head',
       creeper_head: 'creeper_head', creeper_wall_head: 'creeper_head',
       piglin_head: 'piglin_head', piglin_wall_head: 'piglin_head',
-      player_head: 'player_head', player_wall_head: 'player_head'
+      player_head: 'player_head', player_wall_head: 'player_head',
+      dragon_head: 'dragon_head', dragon_wall_head: 'dragon_head'
     }
     const isModeled = (n) => n && (chests.has(n) || upright.has(n) || SKULL[n] ||
       n === 'decorated_pot' || n.endsWith('shulker_box') || n.endsWith('_bed') || n.endsWith('banner'))
@@ -506,6 +507,9 @@ class Entities {
           const tex = file && loadTextureFresh(file)
           if (tex) mesh.traverse((o) => { if (o.material) { o.material.map = tex; o.material.needsUpdate = true } })
         }
+        // The ender-dragon head is a big multi-part model — scale it down to block size and
+        // lift so it sits centred in the block.
+        if (type === 'dragon_head') { mesh.scale.set(0.5, 0.5, 0.5); mesh.position.set(pos.x + 0.5, pos.y + 0.1, pos.z + 0.5) }
         if (isWallSkull) {
           // Mounted on a wall face, centred vertically, offset toward the wall.
           const f = props.facing
