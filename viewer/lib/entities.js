@@ -264,7 +264,8 @@ class Entities {
   addBlockEntityModels (bot, center, radius) {
     if (!bot || !bot.findBlocks || !center) return
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
-    const isModeled = (n) => n && (chests.has(n) || n.endsWith('shulker_box'))
+    const upright = new Set(['conduit', 'bell'])
+    const isModeled = (n) => n && (chests.has(n) || upright.has(n) || n.endsWith('shulker_box'))
     let positions = []
     try {
       positions = bot.findBlocks({
