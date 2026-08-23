@@ -48,6 +48,7 @@ class Viewer {
     console.log('Using version: ' + version)
     this.version = version
     this.world.setVersion(version)
+    this.entities.setVersion(version)
     this.entities.clear()
     this.primitives.clear()
     return true
