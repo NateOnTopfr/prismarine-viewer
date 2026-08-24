@@ -284,10 +284,19 @@ class WorldView extends EventEmitter {
   // skylight (open sky = 15, attenuated through cover) + a block-light flood-fill from emitters
   // within the column. Bounded to `this.lightBand` (a Y range around the shot) to stay cheap;
   // needs `this.mcData` (blocksByStateId → filterLight/emitLight). No-op if either is unset.
+  //
+  // HYBRID (2026-08-24): the server's OWN light — where it sent any — has proper multi-directional
+  // propagation (light bleeds around overhangs / into openings) that our per-column straight-down
+  // pass can't match. So we take max(serverLight, computed): natural/loaded terrain keeps the
+  // server's richer light, while command-placed builds (server sent 0) get our computed fallback.
+  // `this.lightMode` = 'hybrid' (default) | 'computed' (ignore server) | 'server' (skip compute).
   _applyLight (col) {
     const md = this.mcData
     const band = this.lightBand
     if (!md || !md.blocksByStateId || !band || typeof col.setSkyLight !== 'function') return
+    const mode = this.lightMode || 'hybrid'
+    if (mode === 'server') return // trust the server's light entirely (natural terrain, no builds)
+    const useServer = mode !== 'computed' // hybrid: blend the server's real light in via max()
     const yBot = band[0], yTop = band[1]
     const Hy = yTop - yBot + 1
     if (Hy <= 0) return
@@ -320,7 +329,13 @@ class WorldView extends EventEmitter {
           const i = idx(x, y, z)
           filter[i] = f
           level = level - f; if (level < 0) level = 0
-          try { col.setSkyLight(p, level) } catch { /* skip */ }
+          // Hybrid: PREFER the server's skylight wherever it sent any (it has real multidirectional
+          // propagation — soft shadows around overhangs — that our straight-down pass can't match),
+          // and use our computed value only where the server sent 0 (command-placed blocks). This
+          // preserves natural shadows rather than flattening them with a max().
+          let out = level
+          if (useServer) { let sv = 0; try { sv = col.getSkyLight(p) } catch { sv = 0 }; if (sv > 0) out = sv }
+          try { col.setSkyLight(p, out) } catch { /* skip */ }
           if (inf && inf.e > 0) { blk[i] = inf.e; emitters.push(i) }
         }
       }
@@ -352,7 +367,12 @@ class WorldView extends EventEmitter {
         const z = (rem / 16) | 0
         const x = rem - z * 16
         p.set(x, y + yBot, z)
-        try { col.setBlockLight(p, blk[i]) } catch { /* skip */ }
+        // Hybrid: block-light uses max — the brightest source wins so command-placed torches (our
+        // computed BFS) always glow, and a spot the server baked brighter (cross-column propagation
+        // our per-column BFS misses) isn't darkened. Positions we don't touch keep the server's.
+        let out = blk[i]
+        if (useServer) { let sv = 0; try { sv = col.getBlockLight(p) } catch { sv = 0 }; if (sv > out) out = sv }
+        try { col.setBlockLight(p, out) } catch { /* skip */ }
       }
     }
   }
