@@ -10,6 +10,24 @@ const { dispose3 } = require('./dispose')
 const { createCanvas, Image } = require('canvas')
 const { buildCustomItemMesh } = require('./customModel')
 
+// Apply a vanilla model `display` transform (per context: head / thirdperson_righthand / …) to a
+// model authored in 0..1 block space, EXACTLY as Minecraft does: around the block centre,
+//   translate(0.5) · translate(translation/16) · rotate(rotationXYZ°) · scale · translate(-0.5).
+// translation is in 1/16-block units. The model must NOT be pre-centred (the transform, together
+// with the model's own authored offset, places it — that's how ItemsAdder head models that sit at
+// y≈+50 get pulled onto the head). Returns true if a transform was applied.
+function applyItemDisplay (obj, disp) {
+  if (!disp || (!disp.translation && !disp.rotation && !disp.scale)) return false
+  const D = Math.PI / 180
+  const M = new THREE.Matrix4().makeTranslation(0.5, 0.5, 0.5)
+  if (disp.translation) M.multiply(new THREE.Matrix4().makeTranslation(disp.translation[0] / 16, disp.translation[1] / 16, disp.translation[2] / 16))
+  if (disp.rotation) M.multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(disp.rotation[0] * D, disp.rotation[1] * D, disp.rotation[2] * D, 'XYZ')))
+  if (disp.scale) M.multiply(new THREE.Matrix4().makeScale(disp.scale[0], disp.scale[1], disp.scale[2]))
+  M.multiply(new THREE.Matrix4().makeTranslation(-0.5, -0.5, -0.5))
+  obj.applyMatrix4(M)
+  return true
+}
+
 // Apply a Display-entity transformation to a mesh: P' = translation * leftRot * scale * rightRot.
 // Drives transformed item/block displays and (per-bone) ModelEngine custom mobs.
 function applyDisplayTransform (obj, t) {
@@ -369,6 +387,31 @@ function attachEquipment (mesh, entity, version, customItems, customArmor) {
       try { g = buildCustomItemMesh(spec, loadPackTexture) } catch { continue }
       if (!g) continue
       const a = EQUIP_ANCHORS[slot]
+
+      // MC-EXACT path: when the pack authored a display transform for this context, apply it exactly
+      // as Minecraft does (around the block centre, no pre-centring) and place the result in the
+      // slot's bone frame. This reproduces the authored pose/scale/offset — far truer than the
+      // fit-and-anchor fallback. Bone frames are tuned to the humanoid model (the common wearer).
+      const disp = spec.display && a.ctx && spec.display[a.ctx]
+      const bone = BONE_FRAME[slot]
+      // Only trust the authored transform when it follows the VANILLA convention: small translations
+      // (a worn/held item sits within ~1.5 blocks of the bone). ItemsAdder/MythicArmors use a
+      // proprietary convention (e.g. a head cosmetic with translation.y = -49.75) that, applied as
+      // MC would, flings the model off the body — for those we fall back to the robust fit-and-anchor.
+      const saneDisp = disp && (!disp.translation || disp.translation.every((v) => Math.abs(v) <= 24))
+      if (bone && disp && (disp.translation || disp.scale) && saneDisp) {
+        if (applyItemDisplay(g, disp)) {
+          const holder = new THREE.Object3D()
+          holder.add(g)
+          holder.scale.setScalar(s)
+          holder.rotation.set(bone.rot[0] * Math.PI / 180, bone.rot[1] * Math.PI / 180, bone.rot[2] * Math.PI / 180)
+          const bx = (slot === 'hand' || slot === 'offhand') ? bone.x * (w / 0.6) : bone.x
+          const by = slot === 'head' ? (topY - 0.5) : bone.y // head bone pivot = head base (crown - 0.5)
+          holder.position.set(bx, by * (slot === 'head' ? 1 : s), bone.z * s)
+          mesh.add(holder)
+          continue
+        }
+      }
       // Nested frames so centring, scaling, posing and anchoring don't interfere:
       //   holder (anchor position + pose rotation + fit scale) → inner (centre the model) → g (raw)
       // Doing the centre-offset on `g` while also scaling it would leave the offset unscaled and shift
@@ -386,7 +429,6 @@ function attachEquipment (mesh, entity, version, customItems, customArmor) {
       // Pose: our per-slot tilt, plus the pack's authored YAW (Y rotation) for this display context so
       // an asymmetric model faces the way it was authored. We deliberately don't take the authored
       // X/Z rotation — it targets Minecraft's hand-bone frame, not ours, and reads wrong when grafted.
-      const disp = spec.display && a.ctx && spec.display[a.ctx]
       const yaw = (disp && disp.rotation && disp.rotation[1]) || 0
       holder.rotation.set(a.rot[0] * Math.PI / 180, (a.rot[1] + yaw) * Math.PI / 180, a.rot[2] * Math.PI / 180)
       if (process.env.NOVA_EQUIP_DEBUG) console.error(`[equip] slot=${slot} name=${info.name} cmd=${info.cmd} fit=${(a.fit / maxDim).toFixed(3)} yaw=${yaw}`)
@@ -435,6 +477,14 @@ const ARMOR_PARTS = {
   larm: { c: [6, 18, 0], s: [4, 12, 4], uv: [40, 16], uv64: [32, 48] },
   rleg: { c: [-2, 6, 0], s: [4, 12, 4], uv: [0, 16], uv64: [0, 16] },
   lleg: { c: [2, 6, 0], s: [4, 12, 4], uv: [0, 16], uv64: [16, 48] }
+}
+// Bone frames for the MC-EXACT display-transform path (a model with an authored display transform is
+// placed here, transformed exactly as MC does). Only slots with a natural, stable bone frame use it;
+// others fall back to fit-and-anchor. head: the head-bone pivot (y is derived from the model's crown
+// at runtime); rot orients the frame. (Hands need the animated arm-bone frame to be exact, so they
+// stay on the robust fit-and-anchor approximation.)
+const BONE_FRAME = {
+  head: { x: 0, y: 0, z: 0, rot: [0, 0, 0] }
 }
 // Which parts each slot covers, and the inflation (px, each side) — vanilla armor "expand" values.
 const ARMOR_SLOT = {
