@@ -8,6 +8,24 @@ const Entity = require('./entity/Entity')
 const { dispose3 } = require('./dispose')
 
 const { createCanvas, Image } = require('canvas')
+const { buildCustomItemMesh } = require('./customModel')
+
+// Load a resource-pack texture (absolute path) as a THREE texture for custom item models.
+// flipY off so the model's UVs (MC v=0 = top) map correctly; cached.
+const _packTexCache = {}
+function loadPackTexture (file) {
+  if (_packTexCache[file] !== undefined) return _packTexCache[file]
+  try {
+    const img = new Image(); img.src = fs.readFileSync(file)
+    const c = createCanvas(img.width || 16, img.height || 16)
+    c.getContext('2d').drawImage(img, 0, 0)
+    const tex = new THREE.Texture(c)
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
+    tex.flipY = false; tex.needsUpdate = true
+    _packTexCache[file] = tex
+  } catch { _packTexCache[file] = null }
+  return _packTexCache[file]
+}
 
 // --- id/texture resolution for display + item entities (block_display, item_display,
 // dropped items, item frames). Resolves numeric ids to names with minecraft-data at the
@@ -259,18 +277,43 @@ function signTextOf (block) {
   return lines.some((l) => l.trim()) ? lines.join('\n') : null
 }
 
-function getEntityMesh (entity, scene, version) {
+function getEntityMesh (entity, scene, version, customItems) {
   let mesh
 
-  // Item entities (item_display, dropped item, item/glow_item_frame) → billboarded item texture.
+  // Item entities (item_display, dropped item, item/glow_item_frame).
   if (entity.item != null) {
-    const tex = itemTexture(version, entity.item)
-    if (tex) {
-      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, alphaTest: 0.4 }))
-      sprite.scale.set(0.7, 0.7, 0.7)
-      sprite.position.y += (entity.name === 'item' ? 0.25 : (entity.height || 0.5) * 0.5) + 0.1
-      mesh = new THREE.Object3D()
-      mesh.add(sprite)
+    // Custom resource-pack model (ItemsAdder/CustomModelData) — render the REAL 3D model, not a
+    // flat billboard. Resolve by (base material, CMD) or by the item_model component.
+    let spec = null
+    if (customItems) {
+      if (entity.cmd != null) {
+        const d = mcData(version)
+        const it = d && d.items && d.items[entity.item]
+        if (it) spec = customItems.byKey[`${it.name.toUpperCase()}:${entity.cmd}`] || customItems.byKey[`${it.name.toUpperCase()}:${Math.round(entity.cmd)}`]
+      }
+      if (!spec && entity.itemModel && customItems.byModel) spec = customItems.byModel[entity.itemModel]
+    }
+    if (spec) {
+      try {
+        const g = buildCustomItemMesh(spec, loadPackTexture)
+        if (g) {
+          const box = new THREE.Box3().setFromObject(g)
+          const c = box.getCenter(new THREE.Vector3())
+          g.position.sub(c) // centre the model on the entity position
+          mesh = new THREE.Object3D(); mesh.add(g)
+        }
+      } catch { /* fall through to billboard */ }
+    }
+    // Fallback: billboarded item texture (vanilla item, or custom model unavailable).
+    if (!mesh) {
+      const tex = itemTexture(version, entity.item)
+      if (tex) {
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, alphaTest: 0.4 }))
+        sprite.scale.set(0.7, 0.7, 0.7)
+        sprite.position.y += (entity.name === 'item' ? 0.25 : (entity.height || 0.5) * 0.5) + 0.1
+        mesh = new THREE.Object3D()
+        mesh.add(sprite)
+      }
     }
   }
 
@@ -346,6 +389,7 @@ class Entities {
     this.scene = scene
     this.entities = {}
     this.version = undefined
+    this.customItems = null // { byKey, byModel } of resolved custom item models (set by the render)
   }
 
   setVersion (version) {
@@ -542,16 +586,27 @@ class Entities {
   }
 
   update (entity) {
+    // Item entities can arrive first as a bare spawn, then get their item/CMD via a later
+    // metadata event — rebuild the mesh if that signature changes so the custom model replaces
+    // the initial billboard (and vice-versa).
+    const cached = this.entities[entity.id]
+    if (cached && entity.item != null) {
+      const sig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
+      if (cached.userData && cached.userData._itemSig !== undefined && cached.userData._itemSig !== sig) {
+        this.scene.remove(cached); dispose3(cached); delete this.entities[entity.id]
+      }
+    }
     if (!this.entities[entity.id]) {
       let mesh
       try {
-        mesh = getEntityMesh(entity, this.scene, this.version)
+        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems)
       } catch (err) {
         // Unknown/unsupported entity type (no geometry in entities.json and no alias)
         // — skip it rather than crash the whole render.
         return
       }
       if (!mesh) return
+      if (entity.item != null) mesh.userData._itemSig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
       this.entities[entity.id] = mesh
       this.scene.add(mesh)
     }

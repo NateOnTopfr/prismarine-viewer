@@ -56,6 +56,27 @@ function itemIdOf (v) {
   return undefined
 }
 
+// CustomModelData (+ item_model) from a Slot's data components — the key to rendering an item
+// entity's real custom (ItemsAdder/CMD) appearance. Returns { cmd?, itemModel? }.
+function itemModelInfoOf (v) {
+  if (v == null) return {}
+  if (v.value && !v.components) return itemModelInfoOf(v.value)
+  const out = {}
+  const comps = v.components || (v.value && v.value.components)
+  if (Array.isArray(comps)) {
+    for (const c of comps) {
+      if (c && c.type === 'custom_model_data') {
+        const fl = c.data && c.data.floats
+        if (Array.isArray(fl) && fl.length) out.cmd = fl[0]
+        else if (typeof c.data === 'number') out.cmd = c.data // legacy int form
+      } else if (c && c.type === 'item_model') {
+        out.itemModel = typeof c.data === 'string' ? c.data : (c.data && c.data.value)
+      }
+    }
+  }
+  return out
+}
+
 // Extract the {x,y,z} of a display-entity scale vector metadata (index 12), if present.
 function scaleOf (v) {
   if (v && typeof v.x === 'number') return { x: v.x, y: v.y, z: v.z }
@@ -69,13 +90,15 @@ function entityPayload (e) {
     username: e.username, customName: displayNameOf(e)
   }
   const m = e.metadata || []
+  let slot
   switch (e.name) {
     case 'text_display': p.customName = flattenText(m[23]) || p.customName; break
-    case 'item_display': p.item = itemIdOf(m[23]); break
+    case 'item_display': p.item = itemIdOf(m[23]); slot = m[23]; break
     case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); break
-    case 'item': p.item = itemIdOf(m[8]); break
-    case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); break
+    case 'item': p.item = itemIdOf(m[8]); slot = m[8]; break
+    case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); slot = m[9]; break
   }
+  if (slot != null) { const info = itemModelInfoOf(slot); if (info.cmd != null) p.cmd = info.cmd; if (info.itemModel) p.itemModel = info.itemModel }
   return p
 }
 
