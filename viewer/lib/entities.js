@@ -290,6 +290,100 @@ function signTextOf (block) {
   return lines.some((l) => l.trim()) ? lines.join('\n') : null
 }
 
+// Stable signature of an entity's equipment loadout — rebuild the mesh when it changes (gear that
+// arrives just after spawn, or a swap). '' when the payload carries no `equip` (e.g. move updates).
+function equipSigOf (entity) {
+  const eq = entity.equip
+  if (!eq) return ''
+  return ['hand', 'offhand', 'head', 'chest', 'legs', 'feet']
+    .map((s) => { const i = eq[s]; return i ? `${i.name}#${i.cmd == null ? '' : i.cmd}#${i.itemModel || ''}` : '' })
+    .join('|')
+}
+
+// Resolve a custom item model spec by material NAME + CMD (or item_model component) — the equipment
+// counterpart of the item-entity lookup (which starts from a numeric item id). Returns a spec or null.
+function customSpecByNameCmd (customItems, name, cmd, itemModel) {
+  if (!customItems || !name) return null
+  let spec = null
+  if (cmd != null) {
+    const M = String(name).replace(/^minecraft:/, '').toUpperCase()
+    spec = customItems.byKey[`${M}:${cmd}`] || customItems.byKey[`${M}:${Math.round(cmd)}`]
+  }
+  if (!spec && itemModel && customItems.byModel) spec = customItems.byModel[itemModel]
+  return spec
+}
+
+// Body anchors for worn/held equipment. Positions are ABSOLUTE blocks for a reference humanoid
+// (height 1.95, e.g. a zombie/player) and scaled by the actual entity height, so gear lands on the
+// right body part across mob sizes. `fit` is the target size (largest axis, blocks). `headRot` is a
+// gentle default pose; hands also carry a forward tilt so a held model reads as held. Tuned for the
+// humanoid case (the overwhelmingly common custom-gear wearer) with a reasonable fallback for others.
+const REF_H = 1.95
+const EQUIP_ANCHORS = {
+  // head.y is computed per-mob at runtime (h - 0.22) so a helmet sits snugly on the skull.
+  head: { x: 0, y: null, z: 0, fit: 0.58, ctx: 'head', rot: [0, 0, 0] },
+  hand: { x: 0.34, y: 1.18, z: 0.22, fit: 0.6, ctx: 'thirdperson_righthand', rot: [-15, 0, 10] },
+  offhand: { x: -0.34, y: 1.18, z: 0.22, fit: 0.6, ctx: 'thirdperson_lefthand', rot: [-15, 0, -10] },
+  chest: { x: 0, y: 1.15, z: 0.02, fit: 0.72, ctx: null, rot: [0, 0, 0] },
+  legs: { x: 0, y: 0.72, z: 0, fit: 0.66, ctx: null, rot: [0, 0, 0] },
+  feet: { x: 0, y: 0.20, z: 0, fit: 0.58, ctx: null, rot: [0, 0, 0] }
+}
+
+// Attach custom (ItemsAdder/Mythic/CMD) held items + worn armor to a mob/player mesh. Each equipped
+// slot with a resolvable custom model is built, size-fitted to that body part, given a legible pose,
+// and anchored on the body. Purely additive & best-effort: slots without a custom model (plain
+// vanilla gear) are skipped here (drawn by the base model). For head/hands we honour the pack's
+// authored display YAW (turning), keeping our own tilt so the pose stays sane in the entity's frame.
+function attachEquipment (mesh, entity, version, customItems) {
+  const eq = entity.equip
+  if (!eq || !customItems || !mesh) return
+  const h = entity.height || 1.8
+  const w = entity.width || 0.6
+  const s = h / REF_H // scale anchor positions to this mob's height
+  // The top of the rendered model is the crown of the head — a robust head anchor across mob types
+  // (and their differing model heights vs hitbox). Fall back to the hitbox height if the box is empty.
+  let topY = h
+  try { const mb = new THREE.Box3().setFromObject(mesh); if (isFinite(mb.max.y) && mb.max.y > 0.1) topY = mb.max.y } catch { /* keep h */ }
+  const headY = topY - 0.24 // head centre ≈ a quarter-block below the crown
+  for (const slot of Object.keys(EQUIP_ANCHORS)) {
+    const info = eq[slot]
+    if (!info) continue
+    const spec = customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
+    if (!spec) continue
+    let g
+    try { g = buildCustomItemMesh(spec, loadPackTexture) } catch { continue }
+    if (!g) continue
+    const a = EQUIP_ANCHORS[slot]
+    // Nested frames so centring, scaling, posing and anchoring don't interfere:
+    //   holder (anchor position + pose rotation + fit scale) → inner (centre the model) → g (raw model)
+    // Doing the centre-offset on `g` while also scaling it would leave the offset unscaled and shift
+    // the model off its anchor — hence the separate inner node.
+    const box = new THREE.Box3().setFromObject(g)
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    const inner = new THREE.Object3D()
+    inner.position.copy(center).multiplyScalar(-1)
+    inner.add(g)
+    const maxDim = Math.max(size.x, size.y, size.z) || 1
+    const holder = new THREE.Object3D()
+    holder.add(inner)
+    holder.scale.setScalar((a.fit / maxDim) * s)
+    // Pose: our per-slot tilt, plus the pack's authored YAW (Y rotation) for this display context so
+    // an asymmetric model faces the way it was authored. We deliberately don't take the authored
+    // X/Z rotation — it targets Minecraft's hand-bone frame, not ours, and reads wrong when grafted.
+    const disp = spec.display && a.ctx && spec.display[a.ctx]
+    const yaw = (disp && disp.rotation && disp.rotation[1]) || 0
+    holder.rotation.set(a.rot[0] * Math.PI / 180, (a.rot[1] + yaw) * Math.PI / 180, a.rot[2] * Math.PI / 180)
+    if (process.env.NOVA_EQUIP_DEBUG) console.error(`[equip] slot=${slot} name=${info.name} cmd=${info.cmd} size=${size.x.toFixed(2)},${size.y.toFixed(2)},${size.z.toFixed(2)} fit=${(a.fit / maxDim).toFixed(3)} yaw=${yaw}`)
+    // x offset widens with the mob's body (hands reach out); y/z scale with height. The head anchor
+    // is derived from the actual height so a helmet sits on the skull regardless of mob size.
+    const ax = (slot === 'hand' || slot === 'offhand') ? a.x * (w / 0.6) : a.x
+    const ay = slot === 'head' ? headY : a.y * s
+    holder.position.set(ax, ay, a.z * s)
+    mesh.add(holder)
+  }
+}
+
 function getEntityMesh (entity, scene, version, customItems) {
   let mesh
 
@@ -376,6 +470,11 @@ function getEntityMesh (entity, scene, version, customItems) {
     geometry.translate(0, h / 2, 0)
     const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
     mesh = new THREE.Mesh(geometry, material)
+  }
+
+  // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
+  if (entity.equip) {
+    try { attachEquipment(mesh, entity, version, customItems) } catch { /* equipment overlay is best-effort */ }
   }
 
   // Label: player username, or custom name / hologram / text_display text.
@@ -657,13 +756,20 @@ class Entities {
   update (entity) {
     // Item entities can arrive first as a bare spawn, then get their item/CMD via a later
     // metadata event — rebuild the mesh if that signature changes so the custom model replaces
-    // the initial billboard (and vice-versa).
+    // the initial billboard (and vice-versa). Mobs/players work the same for equipment: the
+    // entity_equipment packet (held item + armor, with CMD) usually lands just after spawn.
     const cached = this.entities[entity.id]
-    if (cached && entity.item != null) {
-      const sig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
-      if (cached.userData && cached.userData._itemSig !== undefined && cached.userData._itemSig !== sig) {
-        this.scene.remove(cached); dispose3(cached); delete this.entities[entity.id]
+    if (cached && cached.userData) {
+      let stale = false
+      if (entity.item != null) {
+        const sig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
+        if (cached.userData._itemSig !== undefined && cached.userData._itemSig !== sig) stale = true
       }
+      // equipSig is only carried on full entity payloads, so a bare move update (no `equip`) yields
+      // '' and never forces a needless rebuild; a newly-arrived/changed loadout does.
+      const esig = equipSigOf(entity)
+      if (esig && cached.userData._equipSig !== undefined && cached.userData._equipSig !== esig) stale = true
+      if (stale) { this.scene.remove(cached); dispose3(cached); delete this.entities[entity.id] }
     }
     if (!this.entities[entity.id]) {
       let mesh
@@ -676,6 +782,7 @@ class Entities {
       }
       if (!mesh) return
       if (entity.item != null) mesh.userData._itemSig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
+      mesh.userData._equipSig = equipSigOf(entity)
       this.entities[entity.id] = mesh
       this.scene.add(mesh)
     }

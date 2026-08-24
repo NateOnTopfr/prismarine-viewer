@@ -103,6 +103,35 @@ function transformOf (m) {
   return { translation, scale, left, right }
 }
 
+// One equipment slot → the identity a renderer needs: { name, cmd?, itemModel? }, or null.
+function slotInfo (name, cmd, itemModel) {
+  if (!name) return null
+  const out = { name: String(name).replace(/^minecraft:/, '') }
+  if (cmd != null) out.cmd = cmd
+  if (itemModel) out.itemModel = itemModel
+  return out
+}
+
+// A mob/player's held items + worn armor, normalized to { hand, offhand, head, chest, legs, feet }.
+// Two sources: authoritative NovaLink (e._novaEquip — server-side, always carries CMD/item_model),
+// else mineflayer's passive entity.equipment array (populated from entity_equipment packets).
+function equipOf (e) {
+  const nv = e._novaEquip
+  if (nv) {
+    const g = (s) => (s ? slotInfo(s.item, s.cmd, s.itemModel) : null)
+    const out = { hand: g(nv.hand), offhand: g(nv.off_hand), head: g(nv.head), chest: g(nv.chest), legs: g(nv.legs), feet: g(nv.feet) }
+    if (out.hand || out.offhand || out.head || out.chest || out.legs || out.feet) return out
+  }
+  // prismarine-entity equipment: [mainhand, offhand, boots, leggings, chestplate, helmet].
+  const arr = e.equipment
+  if (Array.isArray(arr)) {
+    const s = (it) => { if (!it) return null; const info = itemModelInfoOf(it); return slotInfo(it.name, info.cmd, info.itemModel) }
+    const out = { hand: s(arr[0]), offhand: s(arr[1]), feet: s(arr[2]), legs: s(arr[3]), chest: s(arr[4]), head: s(arr[5]) }
+    if (out.hand || out.offhand || out.head || out.chest || out.legs || out.feet) return out
+  }
+  return null
+}
+
 function entityPayload (e) {
   const p = {
     id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height,
@@ -118,6 +147,9 @@ function entityPayload (e) {
     case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); slot = m[9]; break
   }
   if (slot != null) { const info = itemModelInfoOf(slot); if (info.cmd != null) p.cmd = info.cmd; if (info.itemModel) p.itemModel = info.itemModel }
+  // Held items + worn armor (mobs/players) — rendered as custom models attached to the body.
+  const equip = equipOf(e)
+  if (equip) p.equip = equip
   return p
 }
 
