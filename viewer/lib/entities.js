@@ -296,7 +296,7 @@ function equipSigOf (entity) {
   const eq = entity.equip
   if (!eq) return ''
   return ['hand', 'offhand', 'head', 'chest', 'legs', 'feet']
-    .map((s) => { const i = eq[s]; return i ? `${i.name}#${i.cmd == null ? '' : i.cmd}#${i.itemModel || ''}` : '' })
+    .map((s) => { const i = eq[s]; return i ? `${i.name}#${i.cmd == null ? '' : i.cmd}#${i.itemModel || ''}#${i.assetId || ''}` : '' })
     .join('|')
 }
 
@@ -334,9 +334,9 @@ const EQUIP_ANCHORS = {
 // and anchored on the body. Purely additive & best-effort: slots without a custom model (plain
 // vanilla gear) are skipped here (drawn by the base model). For head/hands we honour the pack's
 // authored display YAW (turning), keeping our own tilt so the pose stays sane in the entity's frame.
-function attachEquipment (mesh, entity, version, customItems) {
+function attachEquipment (mesh, entity, version, customItems, customArmor) {
   const eq = entity.equip
-  if (!eq || !customItems || !mesh) return
+  if (!eq || !mesh || (!customItems && !customArmor)) return
   const h = entity.height || 1.8
   const w = entity.width || 0.6
   const s = h / REF_H // scale anchor positions to this mob's height
@@ -348,43 +348,130 @@ function attachEquipment (mesh, entity, version, customItems) {
   for (const slot of Object.keys(EQUIP_ANCHORS)) {
     const info = eq[slot]
     if (!info) continue
-    const spec = customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
-    if (!spec) continue
-    let g
-    try { g = buildCustomItemMesh(spec, loadPackTexture) } catch { continue }
-    if (!g) continue
-    const a = EQUIP_ANCHORS[slot]
-    // Nested frames so centring, scaling, posing and anchoring don't interfere:
-    //   holder (anchor position + pose rotation + fit scale) → inner (centre the model) → g (raw model)
-    // Doing the centre-offset on `g` while also scaling it would leave the offset unscaled and shift
-    // the model off its anchor — hence the separate inner node.
-    const box = new THREE.Box3().setFromObject(g)
-    const size = box.getSize(new THREE.Vector3())
-    const center = box.getCenter(new THREE.Vector3())
-    const inner = new THREE.Object3D()
-    inner.position.copy(center).multiplyScalar(-1)
-    inner.add(g)
-    const maxDim = Math.max(size.x, size.y, size.z) || 1
-    const holder = new THREE.Object3D()
-    holder.add(inner)
-    holder.scale.setScalar((a.fit / maxDim) * s)
-    // Pose: our per-slot tilt, plus the pack's authored YAW (Y rotation) for this display context so
-    // an asymmetric model faces the way it was authored. We deliberately don't take the authored
-    // X/Z rotation — it targets Minecraft's hand-bone frame, not ours, and reads wrong when grafted.
-    const disp = spec.display && a.ctx && spec.display[a.ctx]
-    const yaw = (disp && disp.rotation && disp.rotation[1]) || 0
-    holder.rotation.set(a.rot[0] * Math.PI / 180, (a.rot[1] + yaw) * Math.PI / 180, a.rot[2] * Math.PI / 180)
-    if (process.env.NOVA_EQUIP_DEBUG) console.error(`[equip] slot=${slot} name=${info.name} cmd=${info.cmd} size=${size.x.toFixed(2)},${size.y.toFixed(2)},${size.z.toFixed(2)} fit=${(a.fit / maxDim).toFixed(3)} yaw=${yaw}`)
-    // x offset widens with the mob's body (hands reach out); y/z scale with height. The head anchor
-    // is derived from the actual height so a helmet sits on the skull regardless of mob size.
-    const ax = (slot === 'hand' || slot === 'offhand') ? a.x * (w / 0.6) : a.x
-    const ay = slot === 'head' ? headY : a.y * s
-    holder.position.set(ax, ay, a.z * s)
-    mesh.add(holder)
+    try {
+      // Worn armor first: equipment-layer armor (MythicArmors / custom sets / vanilla) renders as the
+      // humanoid armor MODEL, not the item's inventory model. Applies to chest/legs/feet always, and
+      // to head unless a 3D helmet item-model resolves (some helmets are 3D models, not armor layers).
+      if (customArmor && info.assetId && slot !== 'hand' && slot !== 'offhand') {
+        const armor = customArmor[info.assetId]
+        const tex = armor && (slot === 'legs' ? (armor.humanoid_leggings || armor.humanoid) : (armor.humanoid || armor.humanoid_leggings))
+        const helmet3d = slot === 'head' && customItems && customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
+        if (tex && !helmet3d) {
+          const layer = buildArmorLayer(slot, tex)
+          if (layer) { layer.scale.setScalar(s); mesh.add(layer); continue }
+        }
+      }
+
+      // Otherwise: a custom item MODEL (held weapon, 3D helmet, cosmetic) attached at the body anchor.
+      const spec = customItems && customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
+      if (!spec) continue
+      let g
+      try { g = buildCustomItemMesh(spec, loadPackTexture) } catch { continue }
+      if (!g) continue
+      const a = EQUIP_ANCHORS[slot]
+      // Nested frames so centring, scaling, posing and anchoring don't interfere:
+      //   holder (anchor position + pose rotation + fit scale) → inner (centre the model) → g (raw)
+      // Doing the centre-offset on `g` while also scaling it would leave the offset unscaled and shift
+      // the model off its anchor — hence the separate inner node.
+      const box = new THREE.Box3().setFromObject(g)
+      const size = box.getSize(new THREE.Vector3())
+      const center = box.getCenter(new THREE.Vector3())
+      const inner = new THREE.Object3D()
+      inner.position.copy(center).multiplyScalar(-1)
+      inner.add(g)
+      const maxDim = Math.max(size.x, size.y, size.z) || 1
+      const holder = new THREE.Object3D()
+      holder.add(inner)
+      holder.scale.setScalar((a.fit / maxDim) * s)
+      // Pose: our per-slot tilt, plus the pack's authored YAW (Y rotation) for this display context so
+      // an asymmetric model faces the way it was authored. We deliberately don't take the authored
+      // X/Z rotation — it targets Minecraft's hand-bone frame, not ours, and reads wrong when grafted.
+      const disp = spec.display && a.ctx && spec.display[a.ctx]
+      const yaw = (disp && disp.rotation && disp.rotation[1]) || 0
+      holder.rotation.set(a.rot[0] * Math.PI / 180, (a.rot[1] + yaw) * Math.PI / 180, a.rot[2] * Math.PI / 180)
+      if (process.env.NOVA_EQUIP_DEBUG) console.error(`[equip] slot=${slot} name=${info.name} cmd=${info.cmd} fit=${(a.fit / maxDim).toFixed(3)} yaw=${yaw}`)
+      // x offset widens with the mob's body (hands reach out); y/z scale with height. The head anchor
+      // is derived from the actual height so a helmet sits on the skull regardless of mob size.
+      const ax = (slot === 'hand' || slot === 'offhand') ? a.x * (w / 0.6) : a.x
+      const ay = slot === 'head' ? headY : a.y * s
+      holder.position.set(ax, ay, a.z * s)
+      mesh.add(holder)
+    } catch { /* one bad slot must not drop the rest */ }
   }
 }
 
-function getEntityMesh (entity, scene, version, customItems) {
+// --- worn armor (1.21.2+ equipment layers + vanilla armor): render the humanoid armor MODEL, not
+// the item's inventory model. The armor texture is a Java 64x32 humanoid atlas; each body part maps
+// to a fixed UV region. UVs normalize to 64x32 (not the file's real size) so HD / non-standard
+// (e.g. MythicArmors) textures scale proportionally onto the model exactly as vanilla does. ---
+
+// Java humanoid box-UV: face rects (px) for a box (w,h,d) at texture offset (u,v), normalized to the
+// atlas size (TW,TH). Confirmed against the vanilla head/body layout. Order matches THREE
+// BoxGeometry groups: +x,-x,+y,-y,+z,-z. v is flipped (textures load flipY=false).
+function armorBoxUV (geo, w, h, d, u, v, TW, TH) {
+  const uv = geo.attributes.uv
+  // Textures load flipY=false, so v maps directly to the image row (top-down) — no 1-v flip (same
+  // convention as customModel.js, which renders correctly).
+  const rect = (fi, u1, v1, u2, v2) => {
+    uv.setXY(fi * 4 + 0, u1 / TW, v1 / TH); uv.setXY(fi * 4 + 1, u2 / TW, v1 / TH)
+    uv.setXY(fi * 4 + 2, u1 / TW, v2 / TH); uv.setXY(fi * 4 + 3, u2 / TW, v2 / TH)
+  }
+  rect(0, u + d + w, v + d, u + 2 * d + w, v + d + h) // +x = left
+  rect(1, u, v + d, u + d, v + d + h)                 // -x = right
+  rect(2, u + d, v, u + d + w, v + d)                 // +y = top
+  rect(3, u + d + w, v, u + d + 2 * w, v + d)         // -y = bottom
+  rect(4, u + d, v + d, u + d + w, v + d + h)         // +z = front
+  rect(5, u + 2 * d + w, v + d, u + 2 * d + 2 * w, v + d + h) // -z = back
+  uv.needsUpdate = true
+}
+
+// Humanoid parts in px (center [x,y,z], size [w,h,d]); origin at the feet, y up. `uv` is the LEGACY
+// 64x32 armor-atlas offset (left limbs reuse right); `uv64` is the MODERN 64x64 offset (separate
+// left limbs). We pick per texture aspect so both vanilla-style and modern equipment atlases map.
+const ARMOR_PARTS = {
+  head: { c: [0, 28, 0], s: [8, 8, 8], uv: [0, 0], uv64: [0, 0] },
+  body: { c: [0, 18, 0], s: [8, 12, 4], uv: [16, 16], uv64: [16, 16] },
+  rarm: { c: [-6, 18, 0], s: [4, 12, 4], uv: [40, 16], uv64: [40, 16] },
+  larm: { c: [6, 18, 0], s: [4, 12, 4], uv: [40, 16], uv64: [32, 48] },
+  rleg: { c: [-2, 6, 0], s: [4, 12, 4], uv: [0, 16], uv64: [0, 16] },
+  lleg: { c: [2, 6, 0], s: [4, 12, 4], uv: [0, 16], uv64: [16, 48] }
+}
+// Which parts each slot covers, and the inflation (px, each side) — vanilla armor "expand" values.
+const ARMOR_SLOT = {
+  head: { parts: ['head'], expand: 1.0 },
+  chest: { parts: ['body', 'rarm', 'larm'], expand: 1.0 },
+  legs: { parts: ['body', 'rleg', 'lleg'], expand: 0.5 },
+  feet: { parts: ['rleg', 'lleg'], expand: 1.0 }
+}
+
+// Build the worn-armor model for one slot, textured with a single armor-layer PNG. Returns an
+// Object3D in block units (origin at the feet) or null. `texturePath` is an absolute PNG path.
+// The atlas layout (legacy 64x32 vs modern 64x64) is chosen from the texture's actual aspect.
+function buildArmorLayer (slot, texturePath) {
+  const conf = ARMOR_SLOT[slot]
+  if (!conf) return null
+  const tex = loadPackTexture(texturePath)
+  const iw = (tex && tex.image && tex.image.width) || 64
+  const ih = (tex && tex.image && tex.image.height) || 32
+  const modern = ih >= iw * 0.75 // ~square => 64x64 modern layout (separate limbs); else 64x32 legacy
+  const TW = 64; const TH = modern ? 64 : 32
+  const mat = new THREE.MeshLambertMaterial({ map: tex || null, transparent: true, alphaTest: 0.05, color: tex ? 0xffffff : 0xb0b0b0 })
+  const group = new THREE.Object3D()
+  const e = conf.expand
+  for (const name of conf.parts) {
+    const p = ARMOR_PARTS[name]
+    const [w, h, d] = p.s
+    const off = modern ? p.uv64 : p.uv
+    const geo = new THREE.BoxGeometry((w + 2 * e) / 16, (h + 2 * e) / 16, (d + 2 * e) / 16)
+    armorBoxUV(geo, w, h, d, off[0], off[1], TW, TH)
+    const m = new THREE.Mesh(geo, mat)
+    m.position.set(p.c[0] / 16, p.c[1] / 16, p.c[2] / 16)
+    group.add(m)
+  }
+  return group
+}
+
+function getEntityMesh (entity, scene, version, customItems, customArmor) {
   let mesh
 
   // Item entities (item_display, dropped item, item/glow_item_frame).
@@ -474,7 +561,7 @@ function getEntityMesh (entity, scene, version, customItems) {
 
   // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
   if (entity.equip) {
-    try { attachEquipment(mesh, entity, version, customItems) } catch { /* equipment overlay is best-effort */ }
+    try { attachEquipment(mesh, entity, version, customItems, customArmor) } catch { /* equipment overlay is best-effort */ }
   }
 
   // Label: player username, or custom name / hologram / text_display text.
@@ -516,6 +603,7 @@ class Entities {
     this.version = undefined
     this.customItems = null // { byKey, byModel } of resolved custom item models (set by the render)
     this.customBlocks = null // { [baseBlock]: [{when, model}] } of resolved custom BLOCK models
+    this.customArmor = null // { [assetId]: {humanoid?, humanoid_leggings?} } worn-armor layer textures
   }
 
   setVersion (version) {
@@ -774,7 +862,7 @@ class Entities {
     if (!this.entities[entity.id]) {
       let mesh
       try {
-        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems)
+        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems, this.customArmor)
       } catch (err) {
         // Unknown/unsupported entity type (no geometry in entities.json and no alias)
         // — skip it rather than crash the whole render.
@@ -806,4 +894,4 @@ class Entities {
   }
 }
 
-module.exports = { Entities }
+module.exports = { Entities, buildArmorLayer }
