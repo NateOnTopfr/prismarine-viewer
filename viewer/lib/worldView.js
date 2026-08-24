@@ -83,6 +83,25 @@ function scaleOf (v) {
   if (v && v.value) return scaleOf(v.value)
   return undefined
 }
+function vec3Of (v) {
+  if (v && typeof v.x === 'number') return { x: v.x, y: v.y, z: v.z }
+  if (v && v.value) return vec3Of(v.value)
+  return undefined
+}
+function quatOf (v) {
+  if (v && typeof v.x === 'number' && typeof v.w === 'number') return { x: v.x, y: v.y, z: v.z, w: v.w }
+  if (v && v.value) return quatOf(v.value)
+  return undefined
+}
+// The Display-entity transformation (metadata 11=translation, 12=scale, 13=left rot, 14=right
+// rot). ModelEngine drives these per-bone item_display to assemble a custom mob; applying it is
+// what makes MEG mobs + any transformed display render correctly. Returns undefined if identity.
+function transformOf (m) {
+  const translation = vec3Of(m[11]); const scale = vec3Of(m[12])
+  const left = quatOf(m[13]); const right = quatOf(m[14])
+  if (!translation && !scale && !left && !right) return undefined
+  return { translation, scale, left, right }
+}
 
 function entityPayload (e) {
   const p = {
@@ -93,8 +112,8 @@ function entityPayload (e) {
   let slot
   switch (e.name) {
     case 'text_display': p.customName = flattenText(m[23]) || p.customName; break
-    case 'item_display': p.item = itemIdOf(m[23]); slot = m[23]; break
-    case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); break
+    case 'item_display': p.item = itemIdOf(m[23]); slot = m[23]; p.transform = transformOf(m); break
+    case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); p.transform = transformOf(m); break
     case 'item': p.item = itemIdOf(m[8]); slot = m[8]; break
     case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); slot = m[9]; break
   }

@@ -10,6 +10,19 @@ const { dispose3 } = require('./dispose')
 const { createCanvas, Image } = require('canvas')
 const { buildCustomItemMesh } = require('./customModel')
 
+// Apply a Display-entity transformation to a mesh: P' = translation * leftRot * scale * rightRot.
+// Drives transformed item/block displays and (per-bone) ModelEngine custom mobs.
+function applyDisplayTransform (obj, t) {
+  if (!t) return
+  const q = (o) => new THREE.Quaternion(o.x, o.y, o.z, o.w)
+  const M = new THREE.Matrix4()
+  if (t.translation) M.multiply(new THREE.Matrix4().makeTranslation(t.translation.x, t.translation.y, t.translation.z))
+  if (t.left) M.multiply(new THREE.Matrix4().makeRotationFromQuaternion(q(t.left)))
+  if (t.scale) M.multiply(new THREE.Matrix4().makeScale(t.scale.x, t.scale.y, t.scale.z))
+  if (t.right) M.multiply(new THREE.Matrix4().makeRotationFromQuaternion(q(t.right)))
+  obj.applyMatrix4(M)
+}
+
 // Load a resource-pack texture (absolute path) as a THREE texture for custom item models.
 // flipY off so the model's UVs (MC v=0 = top) map correctly; cached.
 const _packTexCache = {}
@@ -297,9 +310,15 @@ function getEntityMesh (entity, scene, version, customItems) {
       try {
         const g = buildCustomItemMesh(spec, loadPackTexture)
         if (g) {
-          const box = new THREE.Box3().setFromObject(g)
-          const c = box.getCenter(new THREE.Vector3())
-          g.position.sub(c) // centre the model on the entity position
+          if (entity.transform) {
+            // Transformed display (e.g. a ModelEngine bone): apply the display transformation so
+            // bones assemble into the mob. Model stays in its authored 0..1 block space.
+            applyDisplayTransform(g, entity.transform)
+          } else {
+            const box = new THREE.Box3().setFromObject(g)
+            const c = box.getCenter(new THREE.Vector3())
+            g.position.sub(c) // plain item display → centre the model on the entity position
+          }
           mesh = new THREE.Object3D(); mesh.add(g)
         }
       } catch { /* fall through to billboard */ }
@@ -317,16 +336,23 @@ function getEntityMesh (entity, scene, version, customItems) {
     }
   }
 
-  // block_display → the actual block as a (scaled) textured cube, anchored at its corner.
+  // block_display → the actual block as a textured cube, anchored at its corner, with the full
+  // display transformation applied (translation/scale/rotation) when present.
   if (!mesh && entity.blockStateId != null) {
     const tex = blockTexture(version, entity.blockStateId)
     const geo = new THREE.BoxGeometry(1, 1, 1)
     geo.translate(0.5, 0.5, 0.5)
     const mat = tex ? new THREE.MeshLambertMaterial({ map: tex })
       : new THREE.MeshLambertMaterial({ color: nameColor(String(entity.blockStateId)) })
-    mesh = new THREE.Mesh(geo, mat)
-    const s = entity.scale || {}
-    mesh.scale.set(s.x || 1, s.y || 1, s.z || 1)
+    const cube = new THREE.Mesh(geo, mat)
+    if (entity.transform) {
+      applyDisplayTransform(cube, entity.transform)
+      mesh = new THREE.Object3D(); mesh.add(cube)
+    } else {
+      const s = entity.scale || {}
+      cube.scale.set(s.x || 1, s.y || 1, s.z || 1)
+      mesh = cube
+    }
   }
 
   // text_display → just the floating text (no box).
