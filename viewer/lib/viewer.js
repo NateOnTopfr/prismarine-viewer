@@ -45,6 +45,10 @@ class Viewer {
     if (this.entities && this.entities.addBlockEntityModels) return this.entities.addBlockEntityModels(bot, center, radius)
   }
 
+  addCustomBlockModels (bot, center, radius) {
+    if (this.entities && this.entities.addCustomBlockModels) this.entities.addCustomBlockModels(bot, center, radius)
+  }
+
   setVersion (version) {
     version = getVersion(version)
     if (version === null) {

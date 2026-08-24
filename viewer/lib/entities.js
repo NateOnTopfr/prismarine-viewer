@@ -390,6 +390,7 @@ class Entities {
     this.entities = {}
     this.version = undefined
     this.customItems = null // { byKey, byModel } of resolved custom item models (set by the render)
+    this.customBlocks = null // { [baseBlock]: [{when, model}] } of resolved custom BLOCK models
   }
 
   setVersion (version) {
@@ -574,6 +575,48 @@ class Entities {
       }
       this.entities[key] = mesh
       this.scene.add(mesh)
+    }
+  }
+
+  // ItemsAdder custom BLOCKS: they're vanilla base blocks (note_block/mushroom/…) with remapped
+  // states → custom models. Overlay the real model at each such block (matched by its state
+  // props), like the block-entity pass. `this.customBlocks` = { base: [{when, model}] } from the
+  // pack's blockstates. Slightly oversized so it covers (not z-fights with) the vanilla base block.
+  addCustomBlockModels (bot, center, radius) {
+    if (!bot || !bot.findBlocks || !center || !this.customBlocks) return
+    const bases = Object.keys(this.customBlocks)
+    if (!bases.length) return
+    const baseSet = new Set(bases)
+    let positions = []
+    try {
+      positions = bot.findBlocks({
+        point: new Vec3(center[0], center[1], center[2]),
+        matching: (b) => b && b.name && baseSet.has(b.name),
+        maxDistance: Math.min(radius || 40, 64),
+        count: 500
+      })
+    } catch (e) { return }
+    for (const pos of positions) {
+      const key = `cb:${pos.x},${pos.y},${pos.z}`
+      if (this.entities[key]) continue
+      let block
+      try { block = bot.blockAt(pos) } catch { continue }
+      if (!block) continue
+      let props = {}
+      try { props = (block.getProperties && block.getProperties()) || {} } catch {}
+      const variants = this.customBlocks[block.name]
+      const match = variants && variants.find((v) => Object.entries(v.when).every(([k, val]) => String(props[k]) === String(val)))
+      if (!match) continue
+      let g
+      try { g = buildCustomItemMesh(match.model, loadPackTexture) } catch { continue }
+      if (!g) continue
+      // Block models are authored 0..16 (block space), corner-anchored at the block position;
+      // grow ~2% about the block centre so the custom faces sit just outside the vanilla base
+      // block (which the mesher still draws) instead of z-fighting it.
+      g.position.set(pos.x - 0.01, pos.y - 0.01, pos.z - 0.01)
+      g.scale.setScalar(1.02)
+      this.entities[key] = g
+      this.scene.add(g)
     }
   }
 
