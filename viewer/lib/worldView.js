@@ -133,20 +133,19 @@ function equippableAssetOf (it) {
 // assetId), else mineflayer's passive entity.equipment array (populated from entity_equipment).
 function equipOf (e) {
   const nv = e._novaEquip
-  if (nv) {
-    const g = (s) => (s ? slotInfo(s.item, s.cmd, s.itemModel, s.assetId) : null)
-    // Return the loadout even if every slot is empty — so a gear-REMOVAL (had gear → none) still
-    // produces a payload whose equipSig differs and rebuilds the mesh (vs a bare move update, which
-    // carries no `equip` at all and correctly leaves the mesh alone).
-    return { hand: g(nv.hand), offhand: g(nv.off_hand), head: g(nv.head), chest: g(nv.chest), legs: g(nv.legs), feet: g(nv.feet) }
-  }
-  // prismarine-entity equipment: [mainhand, offhand, boots, leggings, chestplate, helmet].
   const arr = e.equipment
-  if (Array.isArray(arr)) {
-    const s = (it) => { if (!it) return null; const info = itemModelInfoOf(it); return slotInfo(it.name, info.cmd, info.itemModel, equippableAssetOf(it)) }
-    return { hand: s(arr[0]), offhand: s(arr[1]), feet: s(arr[2]), legs: s(arr[3]), chest: s(arr[4]), head: s(arr[5]) }
-  }
-  return null
+  if (!nv && !Array.isArray(arr)) return null
+  // PER-SLOT MERGE of both sources: prefer NovaLink (authoritative — always carries CMD/item_model/
+  // assetId), else mineflayer's passive slot. This closes packet-timing / NBT gaps where one source
+  // has a slot the other momentarily doesn't, instead of an all-or-nothing OR. Returning the loadout
+  // even when every slot is empty lets a gear-REMOVAL still change the equipSig and rebuild the mesh.
+  const g = (s) => (s ? slotInfo(s.item, s.cmd, s.itemModel, s.assetId) : null)
+  // prismarine-entity equipment array order: [mainhand, offhand, boots, leggings, chestplate, helmet].
+  const p = (it) => { if (!it) return null; const info = itemModelInfoOf(it); return slotInfo(it.name, info.cmd, info.itemModel, equippableAssetOf(it)) }
+  const pass = Array.isArray(arr) ? { hand: p(arr[0]), offhand: p(arr[1]), feet: p(arr[2]), legs: p(arr[3]), chest: p(arr[4]), head: p(arr[5]) } : {}
+  const nvE = nv ? { hand: g(nv.hand), offhand: g(nv.off_hand), head: g(nv.head), chest: g(nv.chest), legs: g(nv.legs), feet: g(nv.feet) } : {}
+  const pick = (slot) => nvE[slot] || pass[slot] || null
+  return { hand: pick('hand'), offhand: pick('offhand'), head: pick('head'), chest: pick('chest'), legs: pick('legs'), feet: pick('feet') }
 }
 
 function entityPayload (e) {
