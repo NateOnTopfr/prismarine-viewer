@@ -143,6 +143,31 @@ function loadTextureFresh (file) {
   } catch { return null }
 }
 
+// Player-head texture with the HAT (2nd) skin layer baked onto the base head. The head cube uses the
+// base-head UVs (top-left 32x16 of the skin); the hat/overlay lives at x[32..64] with the same 6-face
+// layout. Compositing the hat over the base (source-over: only its opaque pixels overlay) shows both
+// on one cube — avoiding a separate transparent hat cube, whose alphaTest destabilises headless GL.
+function loadPlayerHeadTexture (file) {
+  try {
+    const img = new Image(); img.src = fs.readFileSync(file)
+    const w = img.width || 64
+    const size = Math.max(w, img.height || 64)
+    const c = createCanvas(size, size); const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const sc = size / 64 // HD-skin scale
+    const hw = Math.round(32 * sc); const hh = Math.round(16 * sc); const hx = Math.round(32 * sc)
+    try {
+      const hat = ctx.getImageData(hx, 0, hw, hh) // the head's hat block
+      const tmp = createCanvas(hw, hh); tmp.getContext('2d').putImageData(hat, 0, 0)
+      ctx.drawImage(tmp, 0, 0) // source-over onto the base head → base + hat combined
+    } catch { /* no hat region (unusual skin) → base head only */ }
+    const tex = new THREE.Texture(c)
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
+    tex.flipY = false; tex.needsUpdate = true
+    return tex
+  } catch { return null }
+}
+
 // --- Banner heraldry: composite the base cloth + each NBT pattern layer (tinted by its
 // dye colour) onto one canvas, exactly like the vanilla BannerRenderer, so a banner shows
 // its real pattern instead of a plain box. Data comes from block.blockEntity.patterns. ---
@@ -415,9 +440,13 @@ function attachEquipment (mesh, entity, version, customItems, customArmor, bbdir
         const armor = customArmor[info.assetId]
         const tex = armor && (slot === 'legs' ? (armor.humanoid_leggings || armor.humanoid) : (armor.humanoid || armor.humanoid_leggings))
         const helmet3d = slot === 'head' && customItems && customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
-        if (tex && !helmet3d) {
+        if (tex) {
           const layer = buildArmorLayer(slot, tex)
-          if (layer) { layer.scale.setScalar(s); mesh.add(layer); continue }
+          if (layer) { layer.scale.setScalar(s); mesh.add(layer) }
+          // Head can combine a base armor LAYER with a 3D helmet item-model on top (the rare
+          // "leather base + 3D hat" set) — fall through to build the 3D helmet too. Every other
+          // case: the layer is the whole piece, so stop here.
+          if (!(slot === 'head' && helmet3d)) continue
         }
       }
 
@@ -525,7 +554,12 @@ const ARMOR_PARTS = {
 // at runtime); rot orients the frame. (Hands need the animated arm-bone frame to be exact, so they
 // stay on the robust fit-and-anchor approximation.)
 const BONE_FRAME = {
-  head: { x: 0, y: 0, z: 0, rot: [0, 0, 0] }
+  head: { x: 0, y: 0, z: 0, rot: [0, 0, 0] },
+  // Hand bones so a held custom item with a sane authored thirdperson display transform is placed
+  // MC-exactly (its scale/translation honoured), not just yaw-turned via fit-and-anchor. Coords
+  // mirror the hand EQUIP_ANCHORS; x widens with body width, y/z scale with height (see placement).
+  hand: { x: 0.34, y: 1.18, z: 0.22, rot: [-15, 0, 10] },
+  offhand: { x: -0.34, y: 1.18, z: 0.22, rot: [-15, 0, -10] }
 }
 // Which parts each slot covers, and the inflation (px, each side) — vanilla armor "expand" values.
 const ARMOR_SLOT = {
@@ -841,8 +875,8 @@ class Entities {
     const version = this.version || '1.21.8' // the running server version — assets track it
     const chests = new Set(['chest', 'trapped_chest', 'ender_chest'])
     const upright = new Set(['conduit', 'bell'])
-    // Mob skulls → the mob's head cube. (player_head needs a skin fetch; dragon_head is a
-    // multi-part model — both left as boxes for now.)
+    // Mob skulls → the mob's head cube. player_head fetches the owner's skin + bakes the hat layer;
+    // dragon_head is the scaled multi-part ender-dragon head model (both handled below).
     const SKULL = {
       skeleton_skull: 'skeleton_skull', skeleton_wall_skull: 'skeleton_skull',
       wither_skeleton_skull: 'wither_skeleton_skull', wither_skeleton_wall_skull: 'wither_skeleton_skull',
@@ -959,7 +993,7 @@ class Entities {
         // an owner-less head. Loaded synchronously here (no network) to keep GL ops contiguous.
         if (type === 'player_head') {
           const file = skinFiles[`${pos.x},${pos.y},${pos.z}`]
-          const tex = file && loadTextureFresh(file)
+          const tex = file && loadPlayerHeadTexture(file) // base head + baked hat (2nd) layer
           if (tex) mesh.traverse((o) => { if (o.material) { o.material.map = tex; o.material.needsUpdate = true } })
         }
         // The ender-dragon head is a big multi-part model — scale it down to block size and

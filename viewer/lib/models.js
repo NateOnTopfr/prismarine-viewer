@@ -601,7 +601,10 @@ function getModelVariants (block, blockStates) {
   if (state.variants) {
     for (const [properties, variant] of Object.entries(state.variants)) {
       if (!matchProperties(block, properties)) continue
-      if (variant instanceof Array) return [variant[0]]
+      // Weighted variants (grass/stone/etc.): pick deterministically by block POSITION so a still
+      // render is reproducible yet the field shows variety, honouring each variant's `weight`
+      // (was always variant[0] → a flat, single-variant look).
+      if (variant instanceof Array) return [pickVariant(variant, block.position)]
       return [variant]
     }
   }
@@ -620,6 +623,19 @@ function getModelVariants (block, blockStates) {
   }
 
   return []
+}
+
+// Deterministic weighted variant pick from a block position (stable per render, varied across the
+// field). Falls back to the first variant when there's no position.
+function pickVariant (arr, pos) {
+  if (!arr || arr.length === 0) return undefined
+  if (arr.length === 1 || !pos) return arr[0]
+  let total = 0
+  for (const v of arr) total += (v.weight || 1)
+  const hash = (((pos.x | 0) * 73856093) ^ ((pos.y | 0) * 19349663) ^ ((pos.z | 0) * 83492791)) >>> 0
+  let r = (hash % 100000) / 100000 * total
+  for (const v of arr) { r -= (v.weight || 1); if (r < 0) return v }
+  return arr[0]
 }
 
 module.exports = { getSectionGeometry }
