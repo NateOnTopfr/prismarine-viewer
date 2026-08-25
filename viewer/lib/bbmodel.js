@@ -58,11 +58,64 @@ function applyCubeUV (geo, faces, texW, texH) {
   uv.needsUpdate = true
 }
 
+// Box-UV mode (box_uv:true): a cube's 6 faces are one unwrapped cross at uv offset [ox,oy], sized by
+// the cube dims (w,h,d). Synthesize the per-face rects from the standard Blockbench/MC layout, then
+// reuse applyCubeUV. This is how vanilla-style entity models (and some ItemsAdder content) map.
+function boxUVFaces (el, texW, texH) {
+  const [x1, y1, z1] = el.from; const [x2, y2, z2] = el.to
+  const w = Math.round(Math.abs(x2 - x1)); const h = Math.round(Math.abs(y2 - y1)); const d = Math.round(Math.abs(z2 - z1))
+  const off = el.uv_offset || el.uv || [0, 0]
+  const ox = off[0] || 0; const oy = off[1] || 0
+  return {
+    up: { uv: [ox + d, oy, ox + d + w, oy + d] },
+    down: { uv: [ox + d + w, oy + d, ox + d + 2 * w, oy] },
+    east: { uv: [ox, oy + d, ox + d, oy + d + h] },
+    north: { uv: [ox + d, oy + d, ox + d + w, oy + d + h] },
+    west: { uv: [ox + d + w, oy + d, ox + d + w + d, oy + d + h] },
+    south: { uv: [ox + d + w + d, oy + d, ox + d + 2 * w + d, oy + d + h] }
+  }
+}
+
+// A mesh element (type:"mesh"): free-form vertices + polygonal faces with per-vertex UVs. Triangulate
+// (fan) each face into a BufferGeometry. Covers ItemsAdder/ModelEngine content that isn't just cubes.
+function buildMeshElement (el, mat) {
+  const verts = el.vertices || {}
+  const faces = el.faces || {}
+  const pos = []; const uvs = []
+  for (const fid of Object.keys(faces)) {
+    const f = faces[fid]
+    const vids = f.vertices || []
+    if (vids.length < 3) continue
+    const fuv = f.uv || {}
+    const P = (vid) => { const v = verts[vid]; return v ? [v[0] * S, v[1] * S, v[2] * S] : [0, 0, 0] }
+    const UV = (vid) => { const u = fuv[vid]; return u ? [u[0] / (el._texW || 16), u[1] / (el._texH || 16)] : [0, 0] }
+    for (let i = 1; i < vids.length - 1; i++) { // fan triangulation
+      for (const vid of [vids[0], vids[i], vids[i + 1]]) { const p = P(vid); pos.push(p[0], p[1], p[2]); const t = UV(vid); uvs.push(t[0], t[1]) }
+    }
+  }
+  if (!pos.length) return null
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geo.computeVertexNormals()
+  return new THREE.Mesh(geo, mat)
+}
+
 const D2R = Math.PI / 180
 const S = 1 / 16 // model units → blocks
 
 function buildElement (el, mat, texW, texH) {
-  if (el.type && el.type !== 'cube') return null // meshes/locators skipped in v1 (cubes cover armor)
+  if (el.type === 'mesh') { // free-form mesh geometry
+    el._texW = texW; el._texH = texH
+    const m = buildMeshElement(el, mat)
+    if (m && el.rotation && (el.rotation[0] || el.rotation[1] || el.rotation[2]) && el.origin) {
+      const pivot = new THREE.Group(); pivot.position.set(el.origin[0] * S, el.origin[1] * S, el.origin[2] * S)
+      pivot.rotation.set((el.rotation[0] || 0) * D2R, (el.rotation[1] || 0) * D2R, (el.rotation[2] || 0) * D2R)
+      m.position.sub(pivot.position); pivot.add(m); return pivot
+    }
+    return m
+  }
+  if (el.type && el.type !== 'cube') return null // locators/nulls have no geometry
   const [x1, y1, z1] = el.from
   const [x2, y2, z2] = el.to
   const inf = (el.inflate || 0)
@@ -71,7 +124,8 @@ function buildElement (el, mat, texW, texH) {
   const d = Math.abs(z2 - z1) + 2 * inf
   // A zero-thickness cube would render nothing; give it a sliver so planes still show.
   const geo = new THREE.BoxGeometry(Math.max(w, 0.01) * S, Math.max(h, 0.01) * S, Math.max(d, 0.01) * S)
-  if (!el.box_uv && el.faces) applyCubeUV(geo, el.faces, texW, texH)
+  if (el.box_uv) applyCubeUV(geo, boxUVFaces(el, texW, texH), texW, texH)
+  else if (el.faces) applyCubeUV(geo, el.faces, texW, texH)
   const mesh = new THREE.Mesh(geo, mat)
   const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2; const cz = (z1 + z2) / 2
   mesh.position.set(cx * S, cy * S, cz * S)
