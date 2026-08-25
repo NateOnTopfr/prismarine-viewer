@@ -9,6 +9,32 @@ const { dispose3 } = require('./dispose')
 
 const { createCanvas, Image } = require('canvas')
 const { buildCustomItemMesh } = require('./customModel')
+const { buildBBModel } = require('./bbmodel')
+
+// --- Worn-armor Blockbench (.bbmodel) resolver: render the SOURCE model of a custom armor piece —
+// the most faithful representation (real geometry the artist made), preferred over the flat
+// equipment-layer texture. Matches a slot's item identity (assetId / item_model / name) to a
+// <name>.bbmodel in the configured dir. Cached per file. ---
+const _bbCache = {}
+function bbNorm (s) { return String(s || '').toLowerCase().replace(/^[a-z0-9_]+:/, '').replace(/[^a-z0-9]+/g, '') }
+function resolveBbmodel (bbdir, info) {
+  if (!bbdir || !info) return null
+  const cands = [info.assetId, info.itemModel, info.name].filter(Boolean).map(bbNorm).filter((c) => c.length >= 3)
+  if (!cands.length) return null
+  let files
+  try { files = fs.readdirSync(bbdir).filter((f) => f.toLowerCase().endsWith('.bbmodel')) } catch { return null }
+  let hit = null
+  for (const f of files) {
+    const base = bbNorm(f.replace(/\.bbmodel$/i, ''))
+    if (cands.some((c) => base === c || base.endsWith(c) || c.endsWith(base))) { hit = f; break }
+  }
+  if (!hit) return null
+  const full = path.join(bbdir, hit)
+  try {
+    if (_bbCache[full] === undefined) { _bbCache[full] = buildBBModel(JSON.parse(fs.readFileSync(full, 'utf8'))) }
+    return _bbCache[full] ? _bbCache[full].clone(true) : null
+  } catch { return null }
+}
 
 // Apply a vanilla model `display` transform (per context: head / thirdperson_righthand / …) to a
 // model authored in 0..1 block space, EXACTLY as Minecraft does: around the block centre,
@@ -358,9 +384,9 @@ const EQUIP_ANCHORS = {
 // and anchored on the body. Purely additive & best-effort: slots without a custom model (plain
 // vanilla gear) are skipped here (drawn by the base model). For head/hands we honour the pack's
 // authored display YAW (turning), keeping our own tilt so the pose stays sane in the entity's frame.
-function attachEquipment (mesh, entity, version, customItems, customArmor) {
+function attachEquipment (mesh, entity, version, customItems, customArmor, bbdir) {
   const eq = entity.equip
-  if (!eq || !mesh || (!customItems && !customArmor)) return
+  if (!eq || !mesh || (!customItems && !customArmor && !bbdir)) return
   const h = entity.height || 1.8
   const w = entity.width || 0.6
   const s = h / REF_H // scale anchor positions to this mob's height
@@ -373,6 +399,15 @@ function attachEquipment (mesh, entity, version, customItems, customArmor) {
     const info = eq[slot]
     if (!info) continue
     try {
+      // Most faithful: the SOURCE Blockbench model of the worn piece (real geometry), if one resolves.
+      // Preferred over the flat equipment-layer texture. Each armor piece is its own model (helmet/
+      // suit/pants/boots), authored in player-model space, so it drops onto the body as a child of
+      // the entity mesh (inheriting position + yaw) scaled to this mob's height.
+      if (bbdir && slot !== 'hand' && slot !== 'offhand') {
+        const bb = resolveBbmodel(bbdir, info)
+        if (bb) { bb.scale.setScalar(s); bb.rotation.y = Math.PI; mesh.add(bb); continue }
+      }
+
       // Worn armor first: equipment-layer armor (MythicArmors / custom sets / vanilla) renders as the
       // humanoid armor MODEL, not the item's inventory model. Applies to chest/legs/feet always, and
       // to head unless a 3D helmet item-model resolves (some helmets are 3D models, not armor layers).
@@ -623,7 +658,7 @@ function buildItemFrameMesh (entity, version, customItems) {
   return group
 }
 
-function getEntityMesh (entity, scene, version, customItems, customArmor) {
+function getEntityMesh (entity, scene, version, customItems, customArmor, bbmodels) {
   let mesh
 
   // Item frame (item_frame / glow_item_frame) — a real frame model flush on the wall with the
@@ -720,7 +755,7 @@ function getEntityMesh (entity, scene, version, customItems, customArmor) {
 
   // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
   if (entity.equip) {
-    try { attachEquipment(mesh, entity, version, customItems, customArmor) } catch { /* equipment overlay is best-effort */ }
+    try { attachEquipment(mesh, entity, version, customItems, customArmor, bbmodels) } catch { /* equipment overlay is best-effort */ }
   }
 
   // Label: player username, or custom name / hologram / text_display text.
@@ -763,6 +798,7 @@ class Entities {
     this.customItems = null // { byKey, byModel } of resolved custom item models (set by the render)
     this.customBlocks = null // { [baseBlock]: [{when, model}] } of resolved custom BLOCK models
     this.customArmor = null // { [assetId]: {humanoid?, humanoid_leggings?} } worn-armor layer textures
+    this.bbmodels = null // dir of source .bbmodel files → faithful worn custom-armor models
   }
 
   setVersion (version) {
@@ -1021,7 +1057,7 @@ class Entities {
     if (!this.entities[entity.id]) {
       let mesh
       try {
-        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems, this.customArmor)
+        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems, this.customArmor, this.bbmodels)
       } catch (err) {
         // Unknown/unsupported entity type (no geometry in entities.json and no alias)
         // — skip it rather than crash the whole render.
