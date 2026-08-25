@@ -875,6 +875,64 @@ class Entities {
     }
   }
 
+  // Beacon (and conduit-less) beams — the vertical light column a beacon shoots to the sky. It's a
+  // client-only effect the mesher never draws; here we add a translucent coloured beam over each
+  // beacon that has a clear-ish column above, tinted by the first stained glass above it (as vanilla
+  // beams take the glass colour). Approximation: a bright thin core + a wider soft halo column.
+  addBeaconBeams (bot, center, radius) {
+    if (!bot || !bot.findBlocks || !center) return
+    const GLASS = {
+      white: 0xffffff, orange: 0xd87f33, magenta: 0xb24cd8, light_blue: 0x6699d8, yellow: 0xe5e533,
+      lime: 0x7fcc19, pink: 0xf27fa5, gray: 0x4c4c4c, light_gray: 0x999999, cyan: 0x4c7f99,
+      purple: 0x7f3fb2, blue: 0x334cb2, brown: 0x664c33, green: 0x667f33, red: 0x993333, black: 0x191919
+    }
+    let positions = []
+    try {
+      positions = bot.findBlocks({
+        point: new Vec3(center[0], center[1], center[2]),
+        matching: (b) => b && b.name === 'beacon',
+        maxDistance: Math.min(radius || 48, 64),
+        count: 64
+      })
+    } catch (e) { return }
+    for (const pos of positions) {
+      const key = `beam:${pos.x},${pos.y},${pos.z}`
+      if (this.entities[key]) continue
+      // Scan up: find the beam colour (first stained glass) and confirm sky access (not fully walled in).
+      let color = 0xffffff
+      let solidBlocks = 0
+      const scanTop = pos.y + 64
+      for (let y = pos.y + 1; y <= scanTop; y++) {
+        let b
+        try { b = bot.blockAt(new Vec3(pos.x, y, pos.z)) } catch { break }
+        if (!b || b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air') continue
+        const gm = /^(\w+)_stained_glass(_pane)?$/.exec(b.name)
+        if (gm && GLASS[gm[1]] !== undefined) { color = GLASS[gm[1]]; continue }
+        if (b.name === 'glass' || b.name === 'glass_pane' || b.name.includes('glass')) continue
+        solidBlocks++
+      }
+      if (solidBlocks > 3) continue // walled in — no visible beam
+      const beamH = scanTop - pos.y
+      const grp = new THREE.Group()
+      // Bright inner core.
+      const core = new THREE.Mesh(
+        new THREE.BoxGeometry(0.25, beamH, 0.25),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false })
+      )
+      core.position.set(pos.x + 0.5, pos.y + 1 + beamH / 2, pos.z + 0.5)
+      grp.add(core)
+      // Soft outer halo.
+      const halo = new THREE.Mesh(
+        new THREE.BoxGeometry(0.75, beamH, 0.75),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false, blending: THREE.AdditiveBlending })
+      )
+      halo.position.copy(core.position)
+      grp.add(halo)
+      this.entities[key] = grp
+      this.scene.add(grp)
+    }
+  }
+
   // Block-entities that have a real (non-cube) model + entity texture — chests, etc. The world
   // mesher only draws them as a plain box, so here we overlay the true bedrock-geometry model
   // (base + lid + lock, textured with the entity texture) at each such block, oriented by facing.

@@ -53,6 +53,10 @@ class Viewer {
     if (this.entities && this.entities.addMegModels) return this.entities.addMegModels(list, dir)
   }
 
+  addBeaconBeams (bot, center, radius) {
+    if (this.entities && this.entities.addBeaconBeams) this.entities.addBeaconBeams(bot, center, radius)
+  }
+
   setVersion (version) {
     version = getVersion(version)
     if (version === null) {
