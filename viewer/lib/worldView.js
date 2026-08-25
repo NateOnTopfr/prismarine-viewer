@@ -342,7 +342,8 @@ class WorldView extends EventEmitter {
     const blk = new Uint8Array(16 * Hy * 16)
     const p = new Vec3(0, 0, 0)
     let emitters = []
-    // Skylight per (x,z) column + record filter grid + emitters.
+    const sky = new Uint8Array(16 * Hy * 16)
+    // Pass 1: straight-down skylight per (x,z) column into `sky` + record filter grid + emitters.
     for (let x = 0; x < 16; x++) {
       for (let z = 0; z < 16; z++) {
         let level = 15
@@ -355,14 +356,45 @@ class WorldView extends EventEmitter {
           const i = idx(x, y, z)
           filter[i] = f
           level = level - f; if (level < 0) level = 0
-          // Hybrid: PREFER the server's skylight wherever it sent any (it has real multidirectional
-          // propagation — soft shadows around overhangs — that our straight-down pass can't match),
-          // and use our computed value only where the server sent 0 (command-placed blocks). This
-          // preserves natural shadows rather than flattening them with a max().
-          let out = level
+          sky[i] = level
+          if (inf && inf.e > 0) { blk[i] = inf.e; emitters.push(i) }
+        }
+      }
+    }
+    // Pass 2: ambient skylight BLEED (horizontal + downward). The straight-down pass alone blacks
+    // out everything under an overhang (a cornice roofs the air just outside a wall → the wall reads
+    // 0). Real skylight bleeds sideways/around; flood it from lit cells, attenuating 1+filter per
+    // step (never upward — that's toward the sky). Enclosed interiors stay dark (many steps from sky),
+    // overhung exteriors light up. Bounded to this column's 16×16×Hy band.
+    let front = []
+    for (let i = 0; i < sky.length; i++) if (sky[i] > 1) front.push(i)
+    while (front.length) {
+      const next = []
+      for (const i of front) {
+        const lvl = sky[i]
+        if (lvl <= 1) continue
+        const y = (i / WD) | 0
+        const rem = i - y * WD
+        const z = (rem / 16) | 0
+        const x = rem - z * 16
+        const spread = (ni) => { if (filter[ni] >= 15) return; const nl = lvl - 1 - filter[ni]; if (nl > sky[ni]) { sky[ni] = nl; next.push(ni) } }
+        if (x > 0) spread(i - 1)
+        if (x < 15) spread(i + 1)
+        if (z > 0) spread(i - 16)
+        if (z < 15) spread(i + 16)
+        if (y > 0) spread(i - WD) // downward only
+      }
+      front = next
+    }
+    // Pass 3: write skylight (hybrid: prefer the server's real light wherever it sent any).
+    for (let x = 0; x < 16; x++) {
+      for (let z = 0; z < 16; z++) {
+        for (let y = yBot; y <= yTop; y++) {
+          const i = idx(x, y, z)
+          p.set(x, y, z)
+          let out = sky[i]
           if (useServer) { let sv = 0; try { sv = col.getSkyLight(p) } catch { sv = 0 }; if (sv > 0) out = sv }
           try { col.setSkyLight(p, out) } catch { /* skip */ }
-          if (inf && inf.e > 0) { blk[i] = inf.e; emitters.push(i) }
         }
       }
     }
