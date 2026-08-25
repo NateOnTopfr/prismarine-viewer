@@ -210,37 +210,44 @@ class WorldView extends EventEmitter {
 
   listenToBot (bot) {
     const worldView = this
+    // These fire on the LIVE bot's event emitter, and each synchronously builds/updates a mesh
+    // (getEntityMesh) that can throw — e.g. an unknown entity, or a GL call after the context was
+    // torn down. A throw here would propagate as an UNCAUGHT error on the bot and can drop the
+    // connection, so every handler is wrapped: a render-side failure must never crash the bot.
+    const safe = (fn) => function (...args) {
+      try { fn.apply(this, args) } catch (e) { /* render is best-effort; never break the bot */ }
+    }
     this.listeners[bot.username] = {
       // 'move': botPosition,
-      entitySpawn: function (e) {
+      entitySpawn: safe(function (e) {
         if (e === bot.entity) return
         worldView.emitter.emit('entity', entityPayload(e))
-      },
-      entityUpdate: function (e) {
+      }),
+      entityUpdate: safe(function (e) {
         // metadata (custom name / display content) usually arrives just AFTER spawn —
         // re-emit so holograms & named entities actually get their text.
         if (e === bot.entity) return
         worldView.emitter.emit('entity', entityPayload(e))
-      },
-      entityEquip: function (e) {
+      }),
+      entityEquip: safe(function (e) {
         // mineflayer emits this on a separate event when an entity_equipment packet lands (often just
         // after spawn). Re-emit the full payload so held-item / armor changes rebuild the mesh.
         if (e === bot.entity) return
         worldView.emitter.emit('entity', entityPayload(e))
-      },
-      entityMoved: function (e) {
+      }),
+      entityMoved: safe(function (e) {
         worldView.emitter.emit('entity', { id: e.id, pos: e.position, pitch: e.pitch, yaw: e.yaw })
-      },
-      entityGone: function (e) {
+      }),
+      entityGone: safe(function (e) {
         worldView.emitter.emit('entity', { id: e.id, delete: true })
-      },
-      chunkColumnLoad: function (pos) {
+      }),
+      chunkColumnLoad: safe(function (pos) {
         worldView.loadChunk(pos)
-      },
-      blockUpdate: function (oldBlock, newBlock) {
+      }),
+      blockUpdate: safe(function (oldBlock, newBlock) {
         const stateId = newBlock.stateId ? newBlock.stateId : ((newBlock.type << 4) | newBlock.metadata)
         worldView.emitter.emit('blockUpdate', { pos: oldBlock.position, stateId })
-      }
+      })
     }
 
     for (const [evt, listener] of Object.entries(this.listeners[bot.username])) {
