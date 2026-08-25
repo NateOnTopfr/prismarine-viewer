@@ -224,7 +224,13 @@ function itemTexture (version, itemId) {
   const d = mcData(version); if (!d) return null
   const it = d.items && d.items[itemId]
   if (!it) return null
-  const f = firstExisting(assetsDir(version), ['items', 'item'], it.name)
+  const dir = assetsDir(version)
+  // Try, in order: the item texture; the first animation frame (clock/compass are `clock_00.png`);
+  // then the block texture (block-items like saplings live under blocks/, not items/).
+  let f = firstExisting(dir, ['items', 'item'], it.name)
+    || firstExisting(dir, ['items', 'item'], it.name + '_00')
+    || firstExisting(dir, ['blocks', 'block'], it.name)
+    || firstExisting(dir, ['blocks', 'block'], it.name + '_top')
   return f ? loadTextureSync(f) : null
 }
 function blockTexture (version, stateId) {
@@ -521,11 +527,114 @@ function buildArmorLayer (slot, texturePath) {
   return group
 }
 
+// A block texture by NAME (not stateId) — for the item-frame border (birch planks).
+function blockTexByName (version, name) {
+  const f = firstExisting(assetsDir(version), ['blocks', 'block'], name)
+  return f ? loadTextureSync(f) : null
+}
+
+// Euler orientation (radians) that turns a +Z-facing frame plane to point along `facing`.
+const FRAME_FACE_EULER = {
+  south: [0, 0, 0], north: [0, Math.PI, 0], east: [0, Math.PI / 2, 0], west: [0, -Math.PI / 2, 0],
+  up: [-Math.PI / 2, 0, 0], down: [Math.PI / 2, 0, 0]
+}
+
+// Build a real item-frame model: a birch-plank border + backing laid flush on the wall by `facing`,
+// with the held item rendered flat in the frame plane, rotated by `frameRotation` (0..7 × 45°).
+// Custom-model items (ItemsAdder/CMD) render their true 3D model laid flat; vanilla items a flat
+// textured quad; maps a filled panel. glow_item_frame lights its contents (emissive). Built in
+// local space centred on the entity position (the caller places the group at entity.pos).
+function buildItemFrameMesh (entity, version, customItems) {
+  const group = new THREE.Object3D()
+  const glow = !!entity.glow
+  // --- frame carcass: backing + 4 border bars, front toward +Z ---
+  const plankTex = blockTexByName(version, 'birch_planks')
+  const frameMat = plankTex
+    ? new THREE.MeshLambertMaterial({ map: plankTex, emissive: glow ? 0x555555 : 0x000000 })
+    : new THREE.MeshLambertMaterial({ color: 0xd7c185, emissive: glow ? 0x555555 : 0x000000 })
+  const backMat = new THREE.MeshLambertMaterial({ color: glow ? 0x9a8f7a : 0x6b6152 })
+  const carc = new THREE.Object3D()
+  const D = 1 / 16 // frame depth
+  const back = new THREE.Mesh(new THREE.BoxGeometry(0.875, 0.875, D * 0.5), backMat)
+  back.position.z = D * 0.25
+  carc.add(back)
+  const bar = 2 / 16 // border thickness
+  const half = 0.5 - bar / 2
+  const mkBar = (w, h, x, y) => {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, D), frameMat)
+    b.position.set(x, y, D / 2)
+    carc.add(b)
+  }
+  mkBar(1, bar, 0, half); mkBar(1, bar, 0, -half) // top / bottom
+  mkBar(bar, 1 - 2 * bar, -half, 0); mkBar(bar, 1 - 2 * bar, half, 0) // left / right
+  group.add(carc)
+
+  // --- contents: the held item, flat in the frame plane, rotated by frameRotation ---
+  if (entity.item != null) {
+    const holder = new THREE.Object3D()
+    holder.position.z = D * 0.9 // just proud of the backing
+    holder.rotation.z = (entity.frameRotation || 0) * (Math.PI / 4)
+    const d = mcData(version)
+    const it = d && d.items && d.items[entity.item]
+    const itemName = it && it.name
+    let placed = false
+    // 1) custom resource-pack model (ItemsAdder / CustomModelData) → real 3D model laid flat
+    let spec = null
+    if (customItems && itemName) {
+      if (entity.cmd != null) spec = customItems.byKey[`${itemName.toUpperCase()}:${entity.cmd}`] || customItems.byKey[`${itemName.toUpperCase()}:${Math.round(entity.cmd)}`]
+      if (!spec && entity.itemModel && customItems.byModel) spec = customItems.byModel[entity.itemModel]
+    }
+    if (spec) {
+      try {
+        const g = buildCustomItemMesh(spec, loadPackTexture)
+        if (g) {
+          const box = new THREE.Box3().setFromObject(g)
+          const c = box.getCenter(new THREE.Vector3()); const sz = box.getSize(new THREE.Vector3())
+          g.position.sub(c)
+          const k = 0.62 / Math.max(sz.x || 1, sz.y || 1, 1e-3)
+          g.scale.setScalar(k)
+          holder.add(g); placed = true
+        }
+      } catch { /* fall through to a flat quad */ }
+    }
+    // 2) filled map → a bright panel filling the frame (content is dynamic; show the surface)
+    if (!placed && itemName === 'filled_map') {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.82, 0.82), new THREE.MeshLambertMaterial({ color: 0xf0ead6, emissive: glow ? 0x777777 : 0x111111 }))
+      holder.rotation.z = Math.round((entity.frameRotation || 0) / 2) * (Math.PI / 2) // maps snap to 90°
+      holder.add(m); placed = true
+    }
+    // 3) vanilla item → flat, double-sided textured quad
+    if (!placed) {
+      const tex = itemTexture(version, entity.item)
+      if (tex) {
+        const q = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.6, 0.6),
+          new THREE.MeshLambertMaterial({ map: tex, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, emissive: glow ? 0x888888 : 0x000000, emissiveMap: glow ? tex : null })
+        )
+        holder.add(q); placed = true
+      }
+    }
+    if (placed) group.add(holder)
+  }
+
+  // orient the whole frame flush to the wall by facing
+  const eul = FRAME_FACE_EULER[entity.frameFacing] || FRAME_FACE_EULER.south
+  group.rotation.set(eul[0], eul[1], eul[2])
+  return group
+}
+
 function getEntityMesh (entity, scene, version, customItems, customArmor) {
   let mesh
 
-  // Item entities (item_display, dropped item, item/glow_item_frame).
-  if (entity.item != null) {
+  // Item frame (item_frame / glow_item_frame) — a real frame model flush on the wall with the
+  // held item laid flat + rotated, not a camera-facing billboard. Must come before the generic
+  // item path below (frames also carry entity.item).
+  if (entity.frame) {
+    try { mesh = buildItemFrameMesh(entity, version, customItems) } catch { /* fall through */ }
+  }
+
+  // Item entities (item_display, dropped item). (Frames handled above.)
+  if (!mesh && !entity.frame && entity.item != null) {
     // Custom resource-pack model (ItemsAdder/CustomModelData) — render the REAL 3D model, not a
     // flat billboard. Resolve by (base material, CMD) or by the item_model component.
     let spec = null
@@ -920,6 +1029,8 @@ class Entities {
       }
       if (!mesh) return
       if (entity.item != null) mesh.userData._itemSig = `${entity.item}:${entity.cmd == null ? '' : entity.cmd}:${entity.itemModel || ''}`
+      // Item frames are oriented by facing (fixed) — don't let the yaw tween below rotate them.
+      if (entity.frame) mesh.userData._fixedOrient = true
       mesh.userData._equipSig = equipSigOf(entity)
       this.entities[entity.id] = mesh
       this.scene.add(mesh)
@@ -936,7 +1047,7 @@ class Entities {
     if (entity.pos) {
       new TWEEN.Tween(e.position).to({ x: entity.pos.x, y: entity.pos.y, z: entity.pos.z }, 50).start()
     }
-    if (entity.yaw) {
+    if (entity.yaw && !e.userData._fixedOrient) {
       const da = (entity.yaw - e.rotation.y) % (Math.PI * 2)
       const dy = 2 * da % (Math.PI * 2) - da
       new TWEEN.Tween(e.rotation).to({ y: e.rotation.y + dy }, 50).start()

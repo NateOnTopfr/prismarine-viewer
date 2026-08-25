@@ -148,6 +148,21 @@ function equipOf (e) {
   return { hand: pick('hand'), offhand: pick('offhand'), head: pick('head'), chest: pick('chest'), legs: pick('legs'), feet: pick('feet') }
 }
 
+// Item-frame facing, derived from the entity position's ±1/32-block offset on one axis (the frame
+// sits 0.03125 proud of the block face it hangs on). Version-independent geometry — mineflayer
+// doesn't surface the Facing/Hanging direction directly. Returns 'up'|'down'|'north'|'south'|
+// 'east'|'west' (defaults 'south'). frac ~0.031 = positive face, ~0.969 = negative face.
+function frameFacingOf (pos) {
+  if (!pos) return 'south'
+  const OFF = 1 / 32
+  const nearFace = (v) => { const f = ((v % 1) + 1) % 1; return f < OFF * 2 ? 1 : (f > 1 - OFF * 2 ? -1 : 0) }
+  const fx = nearFace(pos.x), fy = nearFace(pos.y), fz = nearFace(pos.z)
+  if (fy > 0) return 'up'; if (fy < 0) return 'down'
+  if (fz > 0) return 'south'; if (fz < 0) return 'north'
+  if (fx > 0) return 'east'; if (fx < 0) return 'west'
+  return 'south'
+}
+
 function entityPayload (e) {
   const p = {
     id: e.id, name: e.name, pos: e.position, width: e.width, height: e.height,
@@ -160,7 +175,12 @@ function entityPayload (e) {
     case 'item_display': p.item = itemIdOf(m[23]); slot = m[23]; p.transform = transformOf(m); break
     case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); p.transform = transformOf(m); break
     case 'item': p.item = itemIdOf(m[8]); slot = m[8]; break
-    case 'item_frame': case 'glow_item_frame': p.item = itemIdOf(m[9]); slot = m[9]; break
+    case 'item_frame': case 'glow_item_frame':
+      p.item = itemIdOf(m[9]); slot = m[9]
+      p.frame = e.name; p.glow = e.name === 'glow_item_frame'
+      p.frameRotation = (numOf(m[10]) || 0) & 7 // 0..7, ×45°
+      p.frameFacing = frameFacingOf(e.position)
+      break
   }
   if (slot != null) { const info = itemModelInfoOf(slot); if (info.cmd != null) p.cmd = info.cmd; if (info.itemModel) p.itemModel = info.itemModel }
   // Held items + worn armor (mobs/players) — rendered as custom models attached to the body.
