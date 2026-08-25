@@ -49,6 +49,10 @@ class Viewer {
     if (this.entities && this.entities.addCustomBlockModels) this.entities.addCustomBlockModels(bot, center, radius)
   }
 
+  addMegModels (list, dir) {
+    if (this.entities && this.entities.addMegModels) return this.entities.addMegModels(list, dir)
+  }
+
   setVersion (version) {
     version = getVersion(version)
     if (version === null) {

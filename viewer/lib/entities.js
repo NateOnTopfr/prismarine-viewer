@@ -1070,6 +1070,52 @@ class Entities {
     }
   }
 
+  // Composite ModelEngine (MEG) mob models into the scene from their SOURCE .bbmodel files.
+  // MEG R4 renders bones as ProtocolLib packet-virtual entities that never reach the client world,
+  // so the mesher/entity path can't see them; instead the caller passes the modelengine_entities
+  // list (base position + yaw + model id + scale, from NovaLink's ModelEngine-API endpoint) and the
+  // blueprints dir, and we place each blueprint's bbmodel at the base transform. `list` may be the
+  // raw endpoint object ({entities:[...]}) or the array. Returns how many models were placed.
+  addMegModels (list, dir) {
+    if (!list || !dir) return 0
+    const entities = Array.isArray(list) ? list : list.entities
+    if (!Array.isArray(entities) || !entities.length) return 0
+    // Index every .bbmodel under dir (recursive — MEG blueprints live in subfolders).
+    const byId = {}
+    const walk = (d) => {
+      let ents
+      try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+      for (const e of ents) {
+        const full = path.join(d, e.name)
+        if (e.isDirectory()) walk(full)
+        else if (e.name.toLowerCase().endsWith('.bbmodel')) byId[bbNorm(e.name.replace(/\.bbmodel$/i, ''))] = full
+      }
+    }
+    walk(dir)
+    let placed = 0
+    for (const ent of entities) {
+      for (const mdl of ent.models || []) {
+        const file = byId[bbNorm(String(mdl.id || ''))]
+        if (!file) continue
+        let obj
+        try {
+          if (_bbCache[file] === undefined) _bbCache[file] = buildBBModel(JSON.parse(fs.readFileSync(file, 'utf8')))
+          obj = _bbCache[file] ? _bbCache[file].clone(true) : null
+        } catch { obj = null }
+        if (!obj) continue
+        const grp = new THREE.Group()
+        grp.add(obj)
+        const sc = mdl.scale || {}
+        grp.scale.set(sc.x || 1, sc.y || 1, sc.z || 1)
+        grp.rotation.y = -((ent.yaw || 0) * Math.PI / 180) // MC yaw (0=south, CW) → three Y (CCW)
+        grp.position.set(ent.x, ent.y, ent.z)
+        this.scene.add(grp)
+        placed++
+      }
+    }
+    return placed
+  }
+
   clear () {
     for (const mesh of Object.values(this.entities)) {
       this.scene.remove(mesh)
