@@ -409,9 +409,12 @@ const EQUIP_ANCHORS = {
 // and anchored on the body. Purely additive & best-effort: slots without a custom model (plain
 // vanilla gear) are skipped here (drawn by the base model). For head/hands we honour the pack's
 // authored display YAW (turning), keeping our own tilt so the pose stays sane in the entity's frame.
-function attachEquipment (mesh, entity, version, customItems, customArmor, bbdir) {
+function attachEquipment (mesh, entity, version, customItems, customArmor, bbdir, camDist) {
   const eq = entity.equip
   if (!eq || !mesh || (!customItems && !customArmor && !bbdir)) return
+  // Use the near (higher-detail) armor LOD only when the camera is close AND the near layer is a
+  // standard humanoid atlas (shader/animated near frames render as garbage — keep `_far` for those).
+  const useNear = (slotArmor) => camDist != null && camDist <= 6 && slotArmor && slotArmor.nearStandard
   const h = entity.height || 1.8
   const w = entity.width || 0.6
   const s = h / REF_H // scale anchor positions to this mob's height
@@ -438,7 +441,11 @@ function attachEquipment (mesh, entity, version, customItems, customArmor, bbdir
       // to head unless a 3D helmet item-model resolves (some helmets are 3D models, not armor layers).
       if (customArmor && info.assetId && slot !== 'hand' && slot !== 'offhand') {
         const armor = customArmor[info.assetId]
-        const tex = armor && (slot === 'legs' ? (armor.humanoid_leggings || armor.humanoid) : (armor.humanoid || armor.humanoid_leggings))
+        const near = useNear(armor)
+        const pick = (n, f) => (near && n) ? n : f
+        const tex = armor && (slot === 'legs'
+          ? (pick(armor.humanoid_leggings_near, armor.humanoid_leggings) || pick(armor.humanoid_near, armor.humanoid))
+          : (pick(armor.humanoid_near, armor.humanoid) || pick(armor.humanoid_leggings_near, armor.humanoid_leggings)))
         const helmet3d = slot === 'head' && customItems && customSpecByNameCmd(customItems, info.name, info.cmd, info.itemModel)
         if (tex) {
           const layer = buildArmorLayer(slot, tex)
@@ -692,7 +699,7 @@ function buildItemFrameMesh (entity, version, customItems) {
   return group
 }
 
-function getEntityMesh (entity, scene, version, customItems, customArmor, bbmodels) {
+function getEntityMesh (entity, scene, version, customItems, customArmor, bbmodels, camDist) {
   let mesh
 
   // Item frame (item_frame / glow_item_frame) — a real frame model flush on the wall with the
@@ -789,7 +796,7 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
 
   // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
   if (entity.equip) {
-    try { attachEquipment(mesh, entity, version, customItems, customArmor, bbmodels) } catch { /* equipment overlay is best-effort */ }
+    try { attachEquipment(mesh, entity, version, customItems, customArmor, bbmodels, camDist) } catch { /* equipment overlay is best-effort */ }
   }
 
   // Label: player username, or custom name / hologram / text_display text.
@@ -833,6 +840,7 @@ class Entities {
     this.customBlocks = null // { [baseBlock]: [{when, model}] } of resolved custom BLOCK models
     this.customArmor = null // { [assetId]: {humanoid?, humanoid_leggings?} } worn-armor layer textures
     this.bbmodels = null // dir of source .bbmodel files → faithful worn custom-armor models
+    this.camDist = null // camera distance (blocks) → equipment-layer armor uses near LOD up close
   }
 
   setVersion (version) {
@@ -1091,7 +1099,7 @@ class Entities {
     if (!this.entities[entity.id]) {
       let mesh
       try {
-        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems, this.customArmor, this.bbmodels)
+        mesh = getEntityMesh(entity, this.scene, this.version, this.customItems, this.customArmor, this.bbmodels, this.camDist)
       } catch (err) {
         // Unknown/unsupported entity type (no geometry in entities.json and no alias)
         // — skip it rather than crash the whole render.
