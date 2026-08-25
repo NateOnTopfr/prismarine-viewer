@@ -255,6 +255,15 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
       const blk = (lb && lb.light != null) ? lb.light : 0
       const lvl = Math.min(15, Math.max(blk, sky))
       faceLight = 0.12 + 0.88 * (lvl / 15)
+      // Emissive self-glow: a light-SOURCE block renders its own faces bright regardless of the
+      // (often dim) neighbour light — so torches/glowstone/lava/lanterns visibly glow in a shot.
+      // Not vanilla's client-side bloom, but real self-illumination; neighbour surfaces are still
+      // lit by the separate block-light flood-fill in worldView._applyLight.
+      let emit = (world.emitLight && world.emitLight[block.name]) || 0
+      try {
+        if (emit < 13 && block.getProperties && block.getProperties().lit === 'true') emit = 13
+      } catch (e) { /* no props */ }
+      if (emit > 0) faceLight = Math.max(faceLight, 0.4 + 0.6 * (emit / 15))
     }
 
     const minx = element.from[0]

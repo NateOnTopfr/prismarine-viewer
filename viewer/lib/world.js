@@ -23,7 +23,16 @@ class World {
     this.Chunk = Chunks(version)
     this.columns = {}
     this.blockCache = {}
-    this.biomeCache = mcData(version).biomes
+    const d = mcData(version)
+    this.biomeCache = d.biomes
+    // Per-block-name luminance (emitLight) so the mesher can render light-source blocks self-lit
+    // ("glow"): glowstone/sea_lantern=15, torch=14, magma=3, etc. Positional light (block.light)
+    // is overwritten per-render, so the block's OWN emission must come from the registry.
+    this.emitLight = {}
+    for (const n in d.blocksByName) {
+      const e = d.blocksByName[n].emitLight
+      if (e) this.emitLight[n] = e
+    }
   }
 
   addColumn (x, z, json) {
