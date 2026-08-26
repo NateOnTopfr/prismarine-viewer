@@ -130,14 +130,17 @@ function renderLiquid (world, cursor, texture, type, biome, water, attr) {
     if (!neighbor) continue
     if (neighbor.type === type) continue
     if ((neighbor.isCube && !isUp) || neighbor.material === 'plant' || neighbor.getProperties().waterlogged) continue
-    if (neighbor.position.y < 0) continue
+    // (removed: `if (neighbor.position.y < 0) continue` — a stale guard that dropped EVERY liquid face
+    // whose neighbour sits below y=0, i.e. ALL water/lava in a 1.18+ negative-Y world (y-64..0). It made
+    // water render completely invisible in render_region/terrain. The solid path already dropped the
+    // same guard; liquids kept it, so water never showed. This is the fix for "vision wasn't showing water".)
 
     let tint = [1, 1, 1]
     if (water) {
       let m = 1 // Fake lighting to improve lisibility
       if (Math.abs(dir[0]) > 0) m = 0.6
       else if (Math.abs(dir[2]) > 0) m = 0.8
-      tint = tints.water[biome]
+      tint = tints.water[biome] || tints.water.plains || [0.25, 0.46, 0.9] // fallback: biome tint may be absent
       tint = [tint[0] * m, tint[1] * m, tint[2] * m]
     }
 
