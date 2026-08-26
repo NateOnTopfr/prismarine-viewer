@@ -56,6 +56,14 @@ class World {
     this.regionBounds = b || null
   }
 
+  // Bot-less renders (render_region) reconstruct a world with NO biome data, so getBlock falls back to
+  // plains and water/grass/foliage always render the plains tint. Setting a default biome id (fetched
+  // from the real region) makes those tints correct. Null (live-bot renders) = use the real per-column
+  // biome as before.
+  setDefaultBiome (id) {
+    this.defaultBiome = (id === undefined || id === null) ? null : id
+  }
+
   getColumn (x, z) {
     return this.columns[columnKey(x, z)]
   }
@@ -105,10 +113,8 @@ class World {
     // first-seen air block's stale skyLight, baking whole chunks dark).
     block.skyLight = column.getSkyLight(locInChunk)
     block.light = column.getBlockLight(locInChunk)
-    block.biome = this.biomeCache[column.getBiome(locInChunk)]
-    if (block.biome === undefined) {
-      block.biome = this.biomeCache[1]
-    }
+    const biomeId = this.defaultBiome != null ? this.defaultBiome : column.getBiome(locInChunk)
+    block.biome = this.biomeCache[biomeId] || this.biomeCache[1]
     return block
   }
 }

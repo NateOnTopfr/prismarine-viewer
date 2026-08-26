@@ -123,6 +123,15 @@ class WorldRenderer {
     }
   }
 
+  // Bot-less render_region: tint water/grass/foliage by the real region biome (id) instead of always
+  // plains. Pass null to clear. Call AFTER setVersion (which resets workers).
+  setDefaultBiome (biome) {
+    this.defaultBiome = (biome == null ? null : biome)
+    for (const worker of this.workers) {
+      worker.postMessage({ type: 'defaultBiome', biome: this.defaultBiome })
+    }
+  }
+
   updateTexturesData () {
     loadTexture(this.texturesDataUrl || `textures/${this.version}.png`, texture => {
       texture.magFilter = THREE.NearestFilter

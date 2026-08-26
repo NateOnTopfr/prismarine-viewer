@@ -17,6 +17,7 @@ const { getSectionGeometry } = require('./models')
 let blocksStates = null
 let world = null
 let regionBounds = null // set for bot-less render_region so boundary faces cull (no floating-slab/water walls)
+let defaultBiome = null // set for bot-less render_region so water/grass/foliage tint matches the real biome
 
 function sectionKey (x, y, z) {
   return `${x},${y},${z}`
@@ -46,9 +47,13 @@ self.onmessage = ({ data }) => {
   if (data.type === 'version') {
     world = new World(data.version)
     if (regionBounds) world.setRegionBounds(regionBounds)
+    if (defaultBiome != null) world.setDefaultBiome(defaultBiome)
   } else if (data.type === 'regionBounds') {
     regionBounds = data.bounds || null
     if (world) world.setRegionBounds(regionBounds)
+  } else if (data.type === 'defaultBiome') {
+    defaultBiome = (data.biome == null ? null : data.biome)
+    if (world) world.setDefaultBiome(defaultBiome)
   } else if (data.type === 'blockStates') {
     blocksStates = data.json
   } else if (data.type === 'dirty') {
@@ -65,6 +70,7 @@ self.onmessage = ({ data }) => {
     world = null
     blocksStates = null
     regionBounds = null // clear so a later live-bot render isn't clipped by a stale region box
+    defaultBiome = null // clear so a later live-bot render uses real per-column biomes
   }
 }
 
