@@ -492,6 +492,10 @@ function getSectionGeometry (sx, sy, sz, world, blocksStates) {
     for (cursor.z = sz; cursor.z < sz + 16; cursor.z++) {
       for (cursor.x = sx; cursor.x < sx + 16; cursor.x++) {
         const block = world.getBlock(cursor)
+        // null = unloaded, or OUTSIDE the render region bounds (see world.setRegionBounds): nothing to
+        // mesh here. Skipping it also means the region's outward boundary faces (neighbour lookups
+        // return null) cull like an unloaded edge — no floating-slab underside / water walls at the cut.
+        if (!block) continue
         const biome = block.biome.name
         if (block.variant === undefined) {
           block.variant = getModelVariants(block, blocksStates)

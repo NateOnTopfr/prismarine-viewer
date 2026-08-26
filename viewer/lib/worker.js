@@ -16,6 +16,7 @@ const { getSectionGeometry } = require('./models')
 
 let blocksStates = null
 let world = null
+let regionBounds = null // set for bot-less render_region so boundary faces cull (no floating-slab/water walls)
 
 function sectionKey (x, y, z) {
   return `${x},${y},${z}`
@@ -44,6 +45,10 @@ function setSectionDirty (pos, value = true) {
 self.onmessage = ({ data }) => {
   if (data.type === 'version') {
     world = new World(data.version)
+    if (regionBounds) world.setRegionBounds(regionBounds)
+  } else if (data.type === 'regionBounds') {
+    regionBounds = data.bounds || null
+    if (world) world.setRegionBounds(regionBounds)
   } else if (data.type === 'blockStates') {
     blocksStates = data.json
   } else if (data.type === 'dirty') {
@@ -59,6 +64,7 @@ self.onmessage = ({ data }) => {
   } else if (data.type === 'reset') {
     world = null
     blocksStates = null
+    regionBounds = null // clear so a later live-bot render isn't clipped by a stale region box
   }
 }
 

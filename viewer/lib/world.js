@@ -45,6 +45,17 @@ class World {
     delete this.columns[columnKey(x, z)]
   }
 
+  // Region-bounded rendering (render_region / bot-less): when a build is reconstructed as an isolated
+  // cuboid, the surrounding chunks are loaded AIR, so the mesher (which only culls faces vs a solid or
+  // vs a genuinely-unloaded null neighbour) DRAWS the region's whole outer shell — the underside + side
+  // walls + water side-faces at the cut, so terrain reads as a floating slab with water "overflowing"
+  // off the edges. Setting bounds makes getBlock return null OUTSIDE the region, so those boundary
+  // faces cull exactly like an unloaded neighbour. Unset (live-bot renders) = no change.
+  setRegionBounds (b) {
+    // b = {minX,minY,minZ,maxX,maxY,maxZ} (inclusive block coords) or null to clear.
+    this.regionBounds = b || null
+  }
+
   getColumn (x, z) {
     return this.columns[columnKey(x, z)]
   }
@@ -62,6 +73,15 @@ class World {
   }
 
   getBlock (pos) {
+    // Outside the render region (if bounded) → treat as unloaded so the mesher culls the cut faces.
+    const rb = this.regionBounds
+    if (rb) {
+      const fx = Math.floor(pos.x)
+      const fy = Math.floor(pos.y)
+      const fz = Math.floor(pos.z)
+      if (fx < rb.minX || fx > rb.maxX || fy < rb.minY || fy > rb.maxY || fz < rb.minZ || fz > rb.maxZ) return null
+    }
+
     const key = columnKey(Math.floor(pos.x / 16) * 16, Math.floor(pos.z / 16) * 16)
 
     const column = this.columns[key]

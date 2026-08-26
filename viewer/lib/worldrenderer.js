@@ -79,6 +79,13 @@ class WorldRenderer {
         }
       }
       if (worker.on) worker.on('message', (data) => { worker.onmessage({ data }) })
+      // A worker_threads Worker with no 'error' listener rethrows on the main thread and takes the
+      // whole (MCP) process down. Log instead so a mesher bug degrades one render, not the server.
+      if (worker.on) {
+        worker.on('error', (err) => {
+          try { console.error('[prismarine-viewer worker error]', (err && err.stack) || err) } catch (e) { /* ignore */ }
+        })
+      }
       this.workers.push(worker)
     }
   }
@@ -104,6 +111,16 @@ class WorldRenderer {
     }
 
     this.updateTexturesData()
+  }
+
+  // Clip meshing to a region box (bot-less render_region): the mesher treats anything outside as an
+  // unloaded neighbour and culls the cut faces, so a bounded build stops looking like a floating slab
+  // with water walls at the edges. Pass null to clear. Call AFTER setVersion (resetWorld clears it).
+  setRegionBounds (bounds) {
+    this.regionBounds = bounds || null
+    for (const worker of this.workers) {
+      worker.postMessage({ type: 'regionBounds', bounds: this.regionBounds })
+    }
   }
 
   updateTexturesData () {
