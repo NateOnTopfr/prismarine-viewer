@@ -197,6 +197,11 @@ class WorldView extends EventEmitter {
     this.loadedChunks = {}
     this.lastPos = new Vec3(0, 0, 0).update(position)
     this.emitter = emitter || this
+    // When true (set by the one-shot hi-fi render path), light is baked REGION-WIDE across all loaded
+    // columns at once, so skylight bleed + block-light flood cross chunk boundaries (the per-column
+    // `_applyLight` can't — it blacks out interior chunks under wide roofs/overhangs). Off for the live
+    // streaming path, where columns arrive over time and a per-column pass is the right trade-off.
+    this.regionLight = false
 
     this.listeners = {}
     this.emitter.on('mouseClick', async (click) => {
@@ -283,9 +288,126 @@ class WorldView extends EventEmitter {
   }
 
   async _loadChunks (positions, sliceSize = 5, waitTime = 0) {
+    if (this.regionLight) { await this._loadChunksRegion(positions); return }
     for (let i = 0; i < positions.length; i += sliceSize) {
       await new Promise((resolve) => setTimeout(resolve, waitTime))
       await Promise.all(positions.slice(i, i + sliceSize).map(p => this.loadChunk(p)))
+    }
+  }
+
+  // Region-wide light bake (one-shot render path). Loads every in-range column, computes filter/emit +
+  // straight-down skylight into ONE region grid, floods skylight bleed + block-light ACROSS chunk
+  // boundaries, writes the result back per column (hybrid: max with the server's own light), then emits
+  // all columns. This is what stops wide roofs/overhangs going black in their interior chunks.
+  async _loadChunksRegion (positions) {
+    const md = this.mcData
+    const band = this.lightBand
+    const [botX, botZ] = chunkPos(this.lastPos)
+    // Phase 0: gather in-range columns.
+    const cols = []
+    for (const pos of positions) {
+      const dx = Math.abs(botX - Math.floor(pos.x / 16))
+      const dz = Math.abs(botZ - Math.floor(pos.z / 16))
+      if (dx >= this.viewDistance || dz >= this.viewDistance) continue
+      const column = await this.world.getColumnAt(pos)
+      if (column) cols.push({ pos, col: column })
+    }
+    if (!cols.length) return
+    const mode = this.lightMode || 'hybrid'
+    // 'server' trusts the server's own light entirely; also bail (emit as-is) if we can't compute.
+    const canLight = mode !== 'server' && md && md.blocksByStateId && band && typeof cols[0].col.setSkyLight === 'function'
+    if (!canLight) {
+      for (const { pos, col } of cols) { this.emitter.emit('loadChunk', { x: pos.x, z: pos.z, chunk: col.toJson() }); this.loadedChunks[`${pos.x},${pos.z}`] = true }
+      return
+    }
+    const useServer = mode !== 'computed' // hybrid: max the server's real light in; computed: ignore it
+    const yBot = band[0], yTop = band[1], Hy = yTop - yBot + 1
+    // Region bounds in world coords.
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity
+    for (const { pos } of cols) { if (pos.x < minX) minX = pos.x; if (pos.z < minZ) minZ = pos.z; if (pos.x > maxX) maxX = pos.x; if (pos.z > maxZ) maxZ = pos.z }
+    maxX += 15; maxZ += 15
+    const W = maxX - minX + 1, D = maxZ - minZ + 1
+    const idx = (wx, y, wz) => ((y - yBot) * D + (wz - minZ)) * W + (wx - minX)
+    const filter = new Uint8Array(W * Hy * D)
+    const sky = new Uint8Array(W * Hy * D)
+    const blk = new Uint8Array(W * Hy * D)
+    const cache = this._lightInfoCache || (this._lightInfoCache = {})
+    const info = (sid) => {
+      let v = cache[sid]
+      if (v === undefined) { const b = md.blocksByStateId[sid]; v = { f: b ? (b.filterLight == null ? 15 : b.filterLight) : 15, e: b ? (b.emitLight || 0) : 0 }; cache[sid] = v }
+      return v
+    }
+    const p = new Vec3(0, 0, 0)
+    let emitters = []
+    // Phase 1: per-column straight-down skylight + filter/emit grids (region-wide arrays).
+    for (const { pos, col } of cols) {
+      for (let lx = 0; lx < 16; lx++) {
+        for (let lz = 0; lz < 16; lz++) {
+          const wx = pos.x + lx, wz = pos.z + lz
+          let level = 15
+          for (let y = yTop; y >= yBot; y--) {
+            p.set(lx, y, lz)
+            let sid = 0
+            try { sid = col.getBlockStateId(p) } catch { sid = 0 }
+            const inf = sid ? info(sid) : null
+            const f = inf ? inf.f : 0
+            const i = idx(wx, y, wz)
+            filter[i] = f
+            level = level - f; if (level < 0) level = 0
+            sky[i] = level
+            if (inf && inf.e > 0) { blk[i] = inf.e; emitters.push(i) }
+          }
+        }
+      }
+    }
+    // Phase 2: region-wide skylight bleed (horizontal + downward), across chunk boundaries.
+    const WD = W * D
+    const flood = (grid, seeds, allowUp) => {
+      let front = seeds
+      while (front.length) {
+        const next = []
+        for (const i of front) {
+          const lvl = grid[i]
+          if (lvl <= 1) continue
+          const y = (i / WD) | 0
+          const rem = i - y * WD
+          const zc = (rem / W) | 0
+          const xc = rem - zc * W
+          const spread = (ni) => { if (filter[ni] >= 15) return; const nl = lvl - 1 - filter[ni]; if (nl > grid[ni]) { grid[ni] = nl; next.push(ni) } }
+          if (xc > 0) spread(i - 1)
+          if (xc < W - 1) spread(i + 1)
+          if (zc > 0) spread(i - W)
+          if (zc < D - 1) spread(i + W)
+          if (y > 0) spread(i - WD)
+          if (allowUp && y < Hy - 1) spread(i + WD)
+        }
+        front = next
+      }
+    }
+    const skySeeds = []
+    for (let i = 0; i < sky.length; i++) if (sky[i] > 1) skySeeds.push(i)
+    flood(sky, skySeeds, false)
+    // Phase 3: region-wide block-light flood from emitters (all 6 directions).
+    flood(blk, emitters, true)
+    // Phase 4: write back per column + emit.
+    for (const { pos, col } of cols) {
+      for (let lx = 0; lx < 16; lx++) {
+        for (let lz = 0; lz < 16; lz++) {
+          const wx = pos.x + lx, wz = pos.z + lz
+          for (let y = yBot; y <= yTop; y++) {
+            const i = idx(wx, y, wz)
+            p.set(lx, y, lz)
+            let so = sky[i]
+            if (useServer) { let sv = 0; try { sv = col.getSkyLight(p) } catch { sv = 0 }; if (sv > so) so = sv }
+            try { col.setSkyLight(p, so) } catch { /* skip */ }
+            let bo = blk[i]
+            if (useServer) { let bv = 0; try { bv = col.getBlockLight(p) } catch { bv = 0 }; if (bv > bo) bo = bv }
+            if (bo > 0) { try { col.setBlockLight(p, bo) } catch { /* skip */ } }
+          }
+        }
+      }
+      this.emitter.emit('loadChunk', { x: pos.x, z: pos.z, chunk: col.toJson() })
+      this.loadedChunks[`${pos.x},${pos.z}`] = true
     }
   }
 
