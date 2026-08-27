@@ -377,11 +377,18 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
         // TODO: correctly interpolate ao light based on pos (evaluate once for each corner of the block)
 
         const ao = (side1Block && side2Block) ? 0 : (3 - (side1Block + side2Block + cornerBlock))
-        light = (ao + 1) / 4
+        // AO darkening. The old (ao+1)/4 bottomed out at 0.25 — far harsher than Minecraft's smooth
+        // lighting (whose fully-occluded corner is ~0.5), so detailed/tiered builds read gloomy with
+        // near-black recesses. Match MC: min 0.5 for a full corner, up to 1.0 open.
+        light = 0.5 + 0.5 * (ao / 3)
         aos.push(ao)
       }
 
       light *= faceLight // combine ambient occlusion with the real baked light level
+      // The faceLight "nothing pure black" floor (0.12) was being multiplied AWAY by AO (down to 0.25),
+      // so shadowed recesses / floating-island undersides / dark-material corners rendered near-black.
+      // Re-apply a TRUE minimum AFTER AO so shadowed geometry stays dark-but-legible in a render.
+      if (light < 0.14) light = 0.14
       attr.colors.push(tint[0] * light, tint[1] * light, tint[2] * light)
     }
 
