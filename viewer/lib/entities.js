@@ -784,14 +784,25 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
   }
 
   if (!mesh) {
-    // No model/content for this type — a placeholder box sized to the hitbox, tinted a
-    // stable muted colour hashed from the name: a distinguishable stand-in, not magenta.
-    const w = entity.width || 0.6
-    const h = entity.height || 1.8
-    const geometry = new THREE.BoxGeometry(w, Math.max(0.1, h), w)
-    geometry.translate(0, h / 2, 0)
-    const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
-    mesh = new THREE.Mesh(geometry, material)
+    // INVISIBLE utility / display entities must render NOTHING, not a placeholder box. These have no
+    // in-world visual (interaction/marker/area_effect_cloud) or their visual is content we already tried
+    // and didn't have (a content-less item_display/block_display, or a text_display with no text). Drawing
+    // a hitbox box for them produced the "phantom coloured bars" (a hashed colour → a purple/pink stub with
+    // no block behind it in-game). A genuinely unknown MOB still falls through to the placeholder below.
+    const kind = String(entity.name || entity.type || '').replace(/^minecraft:/, '')
+    const INVISIBLE = new Set(['interaction', 'marker', 'area_effect_cloud', 'text_display', 'item_display', 'block_display', 'block_display_entity'])
+    if (INVISIBLE.has(kind)) {
+      mesh = new THREE.Object3D() // empty — no placeholder, so the label (if any) can still attach
+    } else {
+      // No model/content for this type — a placeholder box sized to the hitbox, tinted a
+      // stable muted colour hashed from the name: a distinguishable stand-in, not magenta.
+      const w = entity.width || 0.6
+      const h = entity.height || 1.8
+      const geometry = new THREE.BoxGeometry(w, Math.max(0.1, h), w)
+      geometry.translate(0, h / 2, 0)
+      const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
+      mesh = new THREE.Mesh(geometry, material)
+    }
   }
 
   // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
