@@ -774,6 +774,15 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
   // text_display → just the floating text (no box).
   if (!mesh && entity.name === 'text_display') mesh = new THREE.Object3D()
 
+  // INVISIBLE utility / display / empty-frame entities render NOTHING. This MUST come before the generic
+  // `new Entity()` below: prismarine-registry HAS geometry for item_frame/glow_item_frame/painting (and a
+  // hitbox for interaction/marker/…), so Entity() would build a box/quad — the "phantom coloured bars" with
+  // no block behind them in-game. Their real content (a framed item, a display's block/item/text) already
+  // rendered in the paths above when the data was present; reaching here means there is none to show.
+  const KIND = String(entity.name || entity.type || '').replace(/^minecraft:/, '')
+  const INVISIBLE = new Set(['interaction', 'marker', 'area_effect_cloud', 'text_display', 'item_display', 'block_display', 'block_display_entity', 'item_frame', 'glow_item_frame', 'painting'])
+  if (!mesh && INVISIBLE.has(KIND)) mesh = new THREE.Object3D()
+
   if (!mesh && entity.name) {
     try {
       const e = new Entity(version || '1.21.8', ENTITY_ALIASES[entity.name] || entity.name, scene)
@@ -784,25 +793,14 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
   }
 
   if (!mesh) {
-    // INVISIBLE utility / display entities must render NOTHING, not a placeholder box. These have no
-    // in-world visual (interaction/marker/area_effect_cloud) or their visual is content we already tried
-    // and didn't have (a content-less item_display/block_display, or a text_display with no text). Drawing
-    // a hitbox box for them produced the "phantom coloured bars" (a hashed colour → a purple/pink stub with
-    // no block behind it in-game). A genuinely unknown MOB still falls through to the placeholder below.
-    const kind = String(entity.name || entity.type || '').replace(/^minecraft:/, '')
-    const INVISIBLE = new Set(['interaction', 'marker', 'area_effect_cloud', 'text_display', 'item_display', 'block_display', 'block_display_entity'])
-    if (INVISIBLE.has(kind)) {
-      mesh = new THREE.Object3D() // empty — no placeholder, so the label (if any) can still attach
-    } else {
-      // No model/content for this type — a placeholder box sized to the hitbox, tinted a
-      // stable muted colour hashed from the name: a distinguishable stand-in, not magenta.
-      const w = entity.width || 0.6
-      const h = entity.height || 1.8
-      const geometry = new THREE.BoxGeometry(w, Math.max(0.1, h), w)
-      geometry.translate(0, h / 2, 0)
-      const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
-      mesh = new THREE.Mesh(geometry, material)
-    }
+    // A genuinely unknown MOB (no model, not in the INVISIBLE set) still gets a placeholder box so it's
+    // visible in the shot — sized to the hitbox, tinted a stable hashed colour (never magenta).
+    const w = entity.width || 0.6
+    const h = entity.height || 1.8
+    const geometry = new THREE.BoxGeometry(w, Math.max(0.1, h), w)
+    geometry.translate(0, h / 2, 0)
+    const material = new THREE.MeshLambertMaterial({ color: nameColor(entity.name || 'entity') })
+    mesh = new THREE.Mesh(geometry, material)
   }
 
   // Held items + worn armor with a custom model (ItemsAdder/Mythic/CMD) — attach to the body.
