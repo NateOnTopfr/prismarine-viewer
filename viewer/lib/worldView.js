@@ -37,7 +37,9 @@ function flattenText (c) {
 function displayNameOf (e) {
   if (e.username !== undefined) return undefined // players already handled via username
   const cn = e.metadata && e.metadata[2]
-  return flattenText(cn)
+  // Metadata[2] is the live custom-name; the bot-less render path has no metadata, so fall back to the
+  // direct field the caller set from a NovaLink read (named mobs / armour stands render their label too).
+  return flattenText(cn) || e.customName
 }
 
 function numOf (v) {
@@ -177,7 +179,7 @@ function entityPayload (e) {
     case 'text_display': p.customName = flattenText(m[23]) || e.text || p.customName; break
     case 'item_display': p.item = itemIdOf(m[23]) || e.item; slot = m[23]; p.transform = transformOf(m); break
     case 'block_display': p.blockStateId = numOf(m[23]); p.block = e.block; p.scale = scaleOf(m[12]); p.transform = transformOf(m); break
-    case 'item': p.item = itemIdOf(m[8]); slot = m[8]; break
+    case 'item': p.item = itemIdOf(m[8]) || e.item; slot = m[8]; break // e.item: bot-less dropped-item id
     case 'item_frame': case 'glow_item_frame':
       p.item = itemIdOf(m[9]) || e.frameItem; slot = m[9]
       p.frame = e.name; p.glow = e.name === 'glow_item_frame' || !!e.glow

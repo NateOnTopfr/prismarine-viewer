@@ -273,7 +273,10 @@ async function resolveSkinFile (profile) {
 }
 function itemTexture (version, itemId) {
   const d = mcData(version); if (!d) return null
-  const it = d.items && d.items[itemId]
+  // Accept a numeric item id (live path, itemIdOf) OR a NAME string ("diamond"/"minecraft:diamond") —
+  // the bot-less render path passes item NAMES straight from a NovaLink read.
+  let it = d.items && d.items[itemId]
+  if (!it && typeof itemId === 'string') { const nm = itemId.replace(/^minecraft:/, ''); it = d.itemsByName && d.itemsByName[nm] }
   if (!it) return null
   const dir = assetsDir(version)
   // Try, in order: the item texture; the first animation frame (clock/compass are `clock_00.png`);
@@ -310,22 +313,23 @@ const ENTITY_ALIASES = {
 
 // A billboarded text label (player username / hologram / custom name / SIGN text). Handles
 // multiple lines (split on \n) so signs show all four lines. Reused everywhere text floats.
-function makeTextSprite (text, height) {
+function makeTextSprite (text, height, camDist) {
   const clean = String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1') // strip §-codes + wrapping quotes
   const lines = clean.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l, i, a) => l.trim() || (i < a.length - 1))
   const nonEmpty = lines.filter((l) => l.trim())
   if (!nonEmpty.length) return null
-  const fpt = 48; const lineH = 66; const pad = 16
+  // Higher-res canvas (72pt) so the label stays crisp when the sprite is scaled up for a far shot.
+  const fpt = 72; const lineH = 96; const pad = 22
   const probe = createCanvas(8, 8).getContext('2d')
   probe.font = `${fpt}pt Arial`
-  const w = Math.min(1400, Math.max(...nonEmpty.map((l) => Math.ceil(probe.measureText(l).width))) + pad * 2)
+  const w = Math.min(2000, Math.max(...nonEmpty.map((l) => Math.ceil(probe.measureText(l).width))) + pad * 2)
   const h = lineH * nonEmpty.length + pad
   const canvas = createCanvas(w, h)
   const ctx = canvas.getContext('2d')
   ctx.font = `${fpt}pt Arial`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.lineWidth = 8
+  ctx.lineWidth = 12
   ctx.strokeStyle = 'rgba(0,0,0,0.85)'
   ctx.fillStyle = '#ffffff'
   nonEmpty.forEach((line, i) => {
@@ -336,9 +340,14 @@ function makeTextSprite (text, height) {
   const tex = new THREE.Texture(canvas)
   tex.needsUpdate = true
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }))
-  const sh = 0.28 * nonEmpty.length // ~0.28 block per line
+  // DISTANCE-AWARE size: a fixed ~0.28-block label is illegible in a 40-block shot. Scale the world height
+  // ∝ camera distance so the label holds a roughly CONSTANT, readable screen fraction at any distance (a
+  // hologram/nametag reads the same close-up or far). Floor keeps close shots sane; cap avoids far-shot
+  // gigantism. Falls back to a fixed size when the camera distance is unknown.
+  const perLine = camDist ? Math.max(0.4, Math.min(2.4, camDist * 0.05)) : 0.34
+  const sh = perLine * nonEmpty.length
   sprite.scale.set((w / h) * sh, sh, 1)
-  sprite.position.y += (height || 1.8) + 0.5
+  sprite.position.y += (height || 1.8) + 0.5 * (perLine / 0.34)
   return sprite
 }
 
@@ -822,7 +831,7 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
   // Label: player username, or custom name / hologram / text_display text.
   const label = entity.username !== undefined ? entity.username : entity.customName
   if (label) {
-    const sprite = makeTextSprite(label, entity.name === 'text_display' ? 0 : entity.height)
+    const sprite = makeTextSprite(label, entity.name === 'text_display' ? 0 : entity.height, camDist)
     if (sprite) mesh.add(sprite)
   }
   return mesh
@@ -887,7 +896,7 @@ class Entities {
       try { block = bot.blockAt(pos) } catch { continue }
       const text = signTextOf(block)
       if (!text) continue
-      const sprite = makeTextSprite(text, 0)
+      const sprite = makeTextSprite(text, 0, this.camDist)
       if (!sprite) continue
       sprite.position.set(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
       this.entities[key] = sprite
