@@ -313,8 +313,22 @@ const ENTITY_ALIASES = {
 
 // A billboarded text label (player username / hologram / custom name / SIGN text). Handles
 // multiple lines (split on \n) so signs show all four lines. Reused everywhere text floats.
+// Common decorative glyphs mapped to ASCII so labels never show a "tofu" box (▯) when the base font
+// (node-canvas Arial) lacks the glyph. Anything else outside the safe range is dropped — a missing
+// decoration reads far better than a box. (Full Unicode symbol/CJK/emoji rendering would need a bundled
+// Unicode font; noted in docs/RENDERER-NOTES.md.)
+const LABEL_SYM = {
+  '✦': '*', '✧': '*', '★': '*', '☆': '*', '✶': '*', '✹': '*', '❋': '*',
+  '●': '*', '◆': '*', '♦': '*', '❖': '*', '•': '-', '·': '-', '–': '-', '—': '-',
+  '→': '>', '←': '<', '▶': '>', '◀': '<', '»': '>>', '«': '<<', '❤': '<3', '★️': '*',
+}
+function sanitizeLabel (s) {
+  return String(s)
+    .replace(/[\uD800-\uDFFF]/g, '')                          // drop astral/emoji surrogate halves
+    .replace(/[ -￿]/g, (ch) => LABEL_SYM[ch] !== undefined ? LABEL_SYM[ch] : (ch.charCodeAt(0) < 0x2100 ? ch : '')) // map known decoratives; keep general punctuation (<0x2100); drop other symbols/dingbats/CJK the base font tofus
+}
 function makeTextSprite (text, height, camDist) {
-  const clean = String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1') // strip §-codes + wrapping quotes
+  const clean = sanitizeLabel(String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1')) // strip §-codes + wrapping quotes, then de-tofu
   const lines = clean.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l, i, a) => l.trim() || (i < a.length - 1))
   const nonEmpty = lines.filter((l) => l.trim())
   if (!nonEmpty.length) return null
