@@ -374,8 +374,11 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
         const side2Block = (side2 && side2.isCube) ? 1 : 0
         const cornerBlock = (corner && corner.isCube) ? 1 : 0
 
-        // TODO: correctly interpolate ao light based on pos (evaluate once for each corner of the block)
-
+        // Per-corner AO: this block runs once PER VERTEX (the 4 face corners), each sampling its own
+        // side1/side2/corner neighbours from its corner direction, and pushes a per-vertex colour below —
+        // so the GPU interpolates AO smoothly across the quad. The aos[0]+aos[3]>=aos[1]+aos[2] flip
+        // (further down) picks the triangulation diagonal to avoid the classic AO interpolation artifact.
+        // (This is the "interpolate AO per corner" the old TODO asked for — already implemented.)
         const ao = (side1Block && side2Block) ? 0 : (3 - (side1Block + side2Block + cornerBlock))
         // AO darkening. The old (ao+1)/4 bottomed out at 0.25 — far harsher than Minecraft's smooth
         // lighting (whose fully-occluded corner is ~0.5), so detailed/tiered builds read gloomy with
