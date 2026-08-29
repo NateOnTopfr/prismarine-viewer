@@ -171,15 +171,18 @@ function entityPayload (e) {
   const m = e.metadata || []
   let slot
   switch (e.name) {
-    case 'text_display': p.customName = flattenText(m[23]) || p.customName; break
-    case 'item_display': p.item = itemIdOf(m[23]); slot = m[23]; p.transform = transformOf(m); break
-    case 'block_display': p.blockStateId = numOf(m[23]); p.scale = scaleOf(m[12]); p.transform = transformOf(m); break
+    // Each display/frame case reads live entity METADATA first, then falls back to DIRECT fields the caller
+    // set (e.text/e.frameItem/e.item/e.block) — the bot-less render path has no metadata, it passes content
+    // straight from a NovaLink read, so without this fallback holograms/framed-items/displays render empty.
+    case 'text_display': p.customName = flattenText(m[23]) || e.text || p.customName; break
+    case 'item_display': p.item = itemIdOf(m[23]) || e.item; slot = m[23]; p.transform = transformOf(m); break
+    case 'block_display': p.blockStateId = numOf(m[23]); p.block = e.block; p.scale = scaleOf(m[12]); p.transform = transformOf(m); break
     case 'item': p.item = itemIdOf(m[8]); slot = m[8]; break
     case 'item_frame': case 'glow_item_frame':
-      p.item = itemIdOf(m[9]); slot = m[9]
-      p.frame = e.name; p.glow = e.name === 'glow_item_frame'
-      p.frameRotation = (numOf(m[10]) || 0) & 7 // 0..7, ×45°
-      p.frameFacing = frameFacingOf(e.position)
+      p.item = itemIdOf(m[9]) || e.frameItem; slot = m[9]
+      p.frame = e.name; p.glow = e.name === 'glow_item_frame' || !!e.glow
+      p.frameRotation = m[10] != null ? ((numOf(m[10]) || 0) & 7) : (e.frameRotation || 0) // 0..7, ×45°
+      p.frameFacing = e.frameFacing || frameFacingOf(e.position)
       break
   }
   if (slot != null) { const info = itemModelInfoOf(slot); if (info.cmd != null) p.cmd = info.cmd; if (info.itemModel) p.itemModel = info.itemModel }

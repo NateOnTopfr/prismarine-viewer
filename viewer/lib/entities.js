@@ -752,6 +752,17 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
     }
   }
 
+  // block_display without a live stateId (the bot-less render path passes a block-DATA string, e.g.
+  // "minecraft:oak_stairs[facing=east]") → resolve it to a default stateId so the cube textures correctly.
+  if (entity.blockStateId == null && entity.block) {
+    try {
+      const d = mcData(version)
+      const nm = String(entity.block).replace(/^minecraft:/, '').replace(/\[.*$/, '')
+      const b = d && d.blocksByName && d.blocksByName[nm]
+      if (b) entity.blockStateId = b.defaultState != null ? b.defaultState : b.minStateId
+    } catch { /* leave unresolved → falls to the invisible path */ }
+  }
+
   // block_display → the actual block as a textured cube, anchored at its corner, with the full
   // display transformation applied (translation/scale/rotation) when present.
   if (!mesh && entity.blockStateId != null) {
