@@ -7,7 +7,27 @@ const { Vec3 } = require('vec3')
 const Entity = require('./entity/Entity')
 const { dispose3 } = require('./dispose')
 
-const { createCanvas, Image } = require('canvas')
+const { createCanvas, Image, registerFont } = require('canvas')
+
+// Label font (layer 2 for the ✦-tofu fix): register a WIDE-COVERAGE Unicode font if the host has one, so
+// floating labels can render real decoratives/symbols (✦ ★ → …), not just the ASCII fallbacks from
+// sanitizeLabel (layer 1). Cross-platform candidate list, first match wins; falls back to Arial + full
+// sanitize when none is found. registerFont must run before any canvas uses the family.
+let LABEL_FONT = 'Arial'
+let LABEL_WIDE = false
+;(() => {
+  const candidates = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',        // Linux — full Latin + symbols
+    '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',    // Linux
+    'C:/Windows/Fonts/ARIALUNI.TTF',                          // Windows — Arial Unicode (full)
+    'C:/Windows/Fonts/seguisym.ttf',                          // Windows — Segoe UI Symbol (Latin + big symbol range)
+    '/Library/Fonts/Arial Unicode.ttf',                       // macOS
+    '/System/Library/Fonts/Apple Symbols.ttf'                 // macOS
+  ]
+  for (const p of candidates) {
+    try { if (require('fs').existsSync(p)) { registerFont(p, { family: 'NovaLabel' }); LABEL_FONT = 'NovaLabel'; LABEL_WIDE = true; break } } catch { /* try next candidate */ }
+  }
+})()
 const { buildCustomItemMesh } = require('./customModel')
 const { buildBBModel } = require('./bbmodel')
 
@@ -323,7 +343,9 @@ const LABEL_SYM = {
   '→': '>', '←': '<', '▶': '>', '◀': '<', '»': '>>', '«': '<<', '❤': '<3', '★️': '*',
 }
 function sanitizeLabel (s) {
-  return String(s)
+  const t = String(s).replace(/[\uD800-\uDFFF]/g, '')        // always drop astral/emoji surrogates (no static face has them)
+  if (LABEL_WIDE) return t                                    // a wide-coverage font is registered → let it draw the real symbols
+  return t
     .replace(/[\uD800-\uDFFF]/g, '')                          // drop astral/emoji surrogate halves
     .replace(/[ -￿]/g, (ch) => LABEL_SYM[ch] !== undefined ? LABEL_SYM[ch] : (ch.charCodeAt(0) < 0x2100 ? ch : '')) // map known decoratives; keep general punctuation (<0x2100); drop other symbols/dingbats/CJK the base font tofus
 }
@@ -335,12 +357,12 @@ function makeTextSprite (text, height, camDist) {
   // Higher-res canvas (72pt) so the label stays crisp when the sprite is scaled up for a far shot.
   const fpt = 72; const lineH = 96; const pad = 22
   const probe = createCanvas(8, 8).getContext('2d')
-  probe.font = `${fpt}pt Arial`
+  probe.font = `${fpt}pt ${LABEL_FONT}`
   const w = Math.min(2000, Math.max(...nonEmpty.map((l) => Math.ceil(probe.measureText(l).width))) + pad * 2)
   const h = lineH * nonEmpty.length + pad
   const canvas = createCanvas(w, h)
   const ctx = canvas.getContext('2d')
-  ctx.font = `${fpt}pt Arial`
+  ctx.font = `${fpt}pt ${LABEL_FONT}`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.lineWidth = 12
