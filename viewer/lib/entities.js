@@ -387,6 +387,66 @@ function makeTextSprite (text, height, camDist) {
   return sprite
 }
 
+// A sign's text painted FLAT ON ITS FACE (not a floating billboard): a small textured plane, sized + oriented
+// to the sign's front, so signs read realistically like in-game. Handles standing signs (rotation 0-15),
+// wall signs + wall-hanging signs (facing N/S/E/W), and hanging signs (rotation). Returns a Mesh, or null if
+// the orientation can't be determined (caller then falls back to a floating label). Dark text with a light
+// halo so it reads on any wood colour.
+function makeSignFacePlane (text, info, pos) {
+  const clean = sanitizeLabel(String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1'))
+  const nonEmpty = clean.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim())
+  if (!nonEmpty.length || !info || !info.name) return null
+  const name = info.name
+  const isWall = name.endsWith('_wall_sign') || name.endsWith('_wall_hanging_sign')
+  const isHanging = name.endsWith('hanging_sign')
+  const props = { facing: info.facing, rotation: info.rotation }
+  // Canvas: a 16:10-ish sign face; up to 4 lines of dark text with a light halo.
+  const W = 260, H = 160
+  const canvas = createCanvas(W, H)
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, W, H)
+  const n = Math.min(4, nonEmpty.length)
+  const fpt = Math.max(18, Math.min(38, Math.floor((H - 24) / n)))
+  ctx.font = `${fpt}pt ${LABEL_FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.lineWidth = 6
+  ctx.strokeStyle = 'rgba(245,245,245,0.85)'
+  ctx.fillStyle = '#141414'
+  const lh = (H - 16) / n
+  nonEmpty.slice(0, 4).forEach((line, i) => {
+    const y = 8 + lh * (i + 0.5)
+    ctx.strokeText(line, W / 2, y)
+    ctx.fillText(line, W / 2, y)
+  })
+  const tex = new THREE.Texture(canvas)
+  tex.needsUpdate = true
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide })
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(isHanging ? 0.72 : 0.82, isHanging ? 0.62 : 0.5), mat)
+  let yaw = 0, py = pos.y + 0.5
+  if (isWall) {
+    const facing = props.facing || 'north'
+    const dir = ({ north: [0, -1], south: [0, 1], west: [-1, 0], east: [1, 0] })[facing] || [0, -1]
+    yaw = Math.atan2(dir[0], dir[1]) // rotate the plane's +Z normal to point along `dir`
+    py = pos.y + 0.5
+  } else {
+    // standing or hanging sign: text faces the compass angle from `rotation` (0-15, clockwise, 0 = south),
+    // same convention the sign-block mesher uses (rotation.y = -rot·2π/16).
+    const rot = parseInt(props.rotation != null ? props.rotation : '0', 10) || 0
+    yaw = -rot * (Math.PI * 2 / 16)
+    py = pos.y + (isHanging ? 0.5 : 0.68) // standing text panel rides high on the post; hanging sits mid-block
+  }
+  mesh.rotation.y = yaw
+  // Push the plane OUT along its (post-rotation) outward normal so it sits just IN FRONT of the sign board
+  // instead of co-planar with it (co-planar = z-fights / hides behind the board face → invisible text). Wall
+  // signs hug a wall, so push nearly a full half-block to clear the mounting face; standing/hanging boards are
+  // central, so a small nudge is enough.
+  const nx = Math.sin(yaw), nz = Math.cos(yaw)
+  const off = isWall ? 0.47 : 0.11
+  mesh.position.set(pos.x + 0.5 + nx * off, py, pos.z + 0.5 + nz * off)
+  return mesh
+}
+
 // Extract sign text (all non-empty lines, joined by \n) from a mineflayer block.
 function signTextOf (block) {
   if (!block) return null
@@ -917,7 +977,34 @@ class Entities {
   // Find signs near `center` and float their text as billboarded labels — so shop/menu/
   // wayfinding signs are readable in a render. Uses bot.findBlocks (efficient) not a scan.
   addSignLabels (bot, center, radius) {
-    if (!bot || !bot.findBlocks || !center) return
+    if (!bot || !center) return
+    // Prefer the AUTHORITATIVE sign list the bot-less render attaches (bot._signs: exact integer positions +
+    // text + facing/rotation from NovaLink). The synthetic bot's findBlocks/blockAt proved unreliable at
+    // locating signs (returned fractional positions + null blocks), so we do NOT depend on them. Fall back to
+    // the findBlocks scan only for a real live-bot render where _signs isn't present.
+    const R = Math.min(radius || 40, 96)
+    const withinR = (x, y, z) => Math.hypot(x - center[0], y - center[1], z - center[2]) <= R
+    if (Array.isArray(bot._signs) && bot._signs.length) {
+      for (const s of bot._signs) {
+        if (!withinR(s.x, s.y, s.z)) continue
+        const key = `sign:${s.x},${s.y},${s.z}`
+        if (this.entities[key]) continue
+        const text = (s.lines || []).join('\n')
+        if (!text.trim()) continue
+        let obj = null
+        try { obj = makeSignFacePlane(text, s, { x: s.x, y: s.y, z: s.z }) } catch { obj = null }
+        if (!obj) { // orientation unknown → floating billboard fallback
+          obj = makeTextSprite(text, 0, this.camDist)
+          if (!obj) continue
+          obj.position.set(s.x + 0.5, s.y + 0.5, s.z + 0.5)
+        }
+        this.entities[key] = obj
+        this.scene.add(obj)
+      }
+      return
+    }
+    // Live-bot fallback: discover signs via the real bot's world.
+    if (!bot.findBlocks) return
     let positions = []
     try {
       positions = bot.findBlocks({
@@ -934,11 +1021,17 @@ class Entities {
       try { block = bot.blockAt(pos) } catch { continue }
       const text = signTextOf(block)
       if (!text) continue
-      const sprite = makeTextSprite(text, 0, this.camDist)
-      if (!sprite) continue
-      sprite.position.set(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
-      this.entities[key] = sprite
-      this.scene.add(sprite)
+      const props = (typeof block.getProperties === 'function' ? block.getProperties() : block._properties) || {}
+      const info = { name: block.name, facing: props.facing, rotation: props.rotation != null ? Number(props.rotation) : undefined }
+      let obj = null
+      try { obj = makeSignFacePlane(text, info, pos) } catch { obj = null }
+      if (!obj) {
+        obj = makeTextSprite(text, 0, this.camDist)
+        if (!obj) continue
+        obj.position.set(pos.x + 0.5, pos.y + 0.5, pos.z + 0.5)
+      }
+      this.entities[key] = obj
+      this.scene.add(obj)
     }
   }
 
