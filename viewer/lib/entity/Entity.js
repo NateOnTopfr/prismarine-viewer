@@ -245,20 +245,18 @@ function getMesh (texture, jsonModel) {
   geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(geoData.skinWeights, 4))
   geometry.setIndex(geoData.indices)
 
-  // Plain Mesh, NOT a SkinnedMesh. `addCube` already bakes each bone's pivot + rest rotation into the cube
-  // vertex positions (see lines above: sub/applyEuler/add bone.position), so the geometry is already in the
-  // correct absolute REST pose — a plain mesh renders it faithfully. We deliberately avoid GPU skinning: this
-  // fork never animates entity bones, and under headless-gl (WebGL1) the skinning path COLLAPSES every entity
-  // into a squashed cube (verified: raw geometry renders a full 2-tall zombie; the SkinnedMesh renders ~1 tall).
-  // The skinIndex/skinWeight attributes remain on the geometry (harmless — a plain Mesh ignores them), and the
-  // bones were still needed above to compute the baked vertex positions.
-  // OPAQUE with an alpha CUTOUT (alphaTest), NOT transparent. `transparent: true` disables depth-writing,
-  // so an opaque 3D model's faces render in submission order and overwrite each other → the body clumps /
-  // collapses (only the head survives). alphaTest gives the hard cutout MC pixel-art needs (hat/overlay
-  // layer, model edges) while keeping depthWrite on so all faces sort correctly.
-  const material = new THREE.MeshLambertMaterial({ alphaTest: 0.5, transparent: false, side: THREE.DoubleSide })
-  const mesh = new THREE.Mesh(geometry, material)
+  // Standard SkinnedMesh + translucent-overlay material (upstream). The entity-collapse bug was NOT here —
+  // it was the UV normalisation above (legacy textureheight:32 vs the real 64x64 texture) scrambling the skin
+  // so the body sampled transparent atlas-padding and alphaTest discarded it, which merely LOOKED like a
+  // skinning/depth-write collapse. With the UV fix, all four mesh/material combos render identically (verified
+  // via an isolated render matrix), so we keep the minimal upstream form: SkinnedMesh works fine under
+  // headless-gl, and `transparent:true` is correct for the semi-transparent 2nd (hat/jacket) skin layer.
+  const material = new THREE.MeshLambertMaterial({ transparent: true, alphaTest: 0.1 })
+  const mesh = new THREE.SkinnedMesh(geometry, material)
+  mesh.add(...rootBones)
   mesh.scale.set(1 / 16, 1 / 16, 1 / 16)
+  mesh.updateMatrixWorld(true) // ensure bone world matrices reflect scale+pivots before bind
+  mesh.bind(skeleton)
 
   const applyTex = (t) => {
     t.magFilter = THREE.NearestFilter
