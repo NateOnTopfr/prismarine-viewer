@@ -134,8 +134,12 @@ class WorldRenderer {
 
   updateTexturesData () {
     loadTexture(this.texturesDataUrl || `textures/${this.version}.png`, texture => {
-      texture.magFilter = THREE.NearestFilter
-      texture.minFilter = THREE.NearestFilter
+      texture.magFilter = THREE.NearestFilter // crisp pixels up close
+      // MIPMAPPED minification (nearest-mip, nearest-sample) — distant/foreshortened flat surfaces (a wide
+      // gold plaza seen at an angle) otherwise MOIRE/SMEAR from aliasing a full-res atlas at sub-pixel scale.
+      // Minecraft itself mipmaps distant blocks. Nearest-mip avoids the tile-bleed a linear-mip atlas causes.
+      texture.minFilter = THREE.NearestMipmapNearestFilter
+      texture.generateMipmaps = true
       texture.flipY = false
       this.material.map = texture
       this.tMaterial.map = texture
