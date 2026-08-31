@@ -177,6 +177,23 @@ function addCube (attr, boneId, bone, cube, texWidth = 64, texHeight = 64) {
 function getMesh (texture, jsonModel) {
   const bones = {}
 
+  // The bundled entity geometry declares LEGACY texture dims (e.g. zombie/player textureheight:32), but modern
+  // minecraft-assets ships 64x64 textures. The legacy pixel-UVs address the SAME top-half regions on a 64x64
+  // atlas, so if we normalise by the declared 32 the V coord samples the wrong rows → the skin is SCRAMBLED
+  // (head on the arms, face on the legs). Read the ACTUAL texture dimensions from the PNG header (IHDR) and
+  // normalise by those, so legacy UVs land on the correct regions of whatever-size texture actually ships.
+  let texW = jsonModel.texturewidth || 64
+  let texH = jsonModel.textureheight || 64
+  try {
+    const abs = resolveEntityTexture(texture)
+    if (abs) {
+      const buf = _fs.readFileSync(abs)
+      if (buf.length > 24 && buf.toString('ascii', 12, 16) === 'IHDR') {
+        texW = buf.readUInt32BE(16); texH = buf.readUInt32BE(20)
+      }
+    }
+  } catch { /* fall back to the declared dims */ }
+
   const geoData = {
     positions: [],
     normals: [],
@@ -206,7 +223,7 @@ function getMesh (texture, jsonModel) {
 
     if (jsonBone.cubes) {
       for (const cube of jsonBone.cubes) {
-        addCube(geoData, i, bone, cube, jsonModel.texturewidth, jsonModel.textureheight)
+        addCube(geoData, i, bone, cube, texW, texH)
       }
     }
     i++
@@ -228,10 +245,19 @@ function getMesh (texture, jsonModel) {
   geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(geoData.skinWeights, 4))
   geometry.setIndex(geoData.indices)
 
-  const material = new THREE.MeshLambertMaterial({ transparent: true, skinning: true, alphaTest: 0.1 })
-  const mesh = new THREE.SkinnedMesh(geometry, material)
-  mesh.add(...rootBones)
-  mesh.bind(skeleton)
+  // Plain Mesh, NOT a SkinnedMesh. `addCube` already bakes each bone's pivot + rest rotation into the cube
+  // vertex positions (see lines above: sub/applyEuler/add bone.position), so the geometry is already in the
+  // correct absolute REST pose — a plain mesh renders it faithfully. We deliberately avoid GPU skinning: this
+  // fork never animates entity bones, and under headless-gl (WebGL1) the skinning path COLLAPSES every entity
+  // into a squashed cube (verified: raw geometry renders a full 2-tall zombie; the SkinnedMesh renders ~1 tall).
+  // The skinIndex/skinWeight attributes remain on the geometry (harmless — a plain Mesh ignores them), and the
+  // bones were still needed above to compute the baked vertex positions.
+  // OPAQUE with an alpha CUTOUT (alphaTest), NOT transparent. `transparent: true` disables depth-writing,
+  // so an opaque 3D model's faces render in submission order and overwrite each other → the body clumps /
+  // collapses (only the head survives). alphaTest gives the hard cutout MC pixel-art needs (hat/overlay
+  // layer, model edges) while keeping depthWrite on so all faces sort correctly.
+  const material = new THREE.MeshLambertMaterial({ alphaTest: 0.5, transparent: false, side: THREE.DoubleSide })
+  const mesh = new THREE.Mesh(geometry, material)
   mesh.scale.set(1 / 16, 1 / 16, 1 / 16)
 
   const applyTex = (t) => {

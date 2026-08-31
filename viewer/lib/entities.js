@@ -864,8 +864,10 @@ function getEntityMesh (entity, scene, version, customItems, customArmor, bbmode
     try { attachEquipment(mesh, entity, version, customItems, customArmor, bbmodels, camDist) } catch { /* equipment overlay is best-effort */ }
   }
 
-  // Label: player username, or custom name / hologram / text_display text.
-  const label = entity.username !== undefined ? entity.username : entity.customName
+  // Label: player username, or custom name / hologram / text_display text. `entity.text` covers
+  // text_display holograms (the bot-less render passes the hologram/sign text there) — without it a
+  // text_display would render blank since its content isn't a username/customName.
+  const label = entity.username !== undefined ? entity.username : (entity.customName != null ? entity.customName : entity.text)
   if (label) {
     const sprite = makeTextSprite(label, entity.name === 'text_display' ? 0 : entity.height, camDist)
     if (sprite) mesh.add(sprite)
