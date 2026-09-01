@@ -343,7 +343,15 @@ class WorldView extends EventEmitter {
     // (round-6 #3/#6). So run the flood only when the grid is modest; above it, keep the cheap PER-COLUMN
     // skylight (phase 1) — everything stays LIT (not the old dark/skip fallback), just without cross-column
     // bleed into deep overhangs, which is fine for the far overview shots that produce such a large grid.
-    const doFlood = gridCells <= 140_000_000
+    // Run the full horizontal flood well above any normal build's grid so a typical hub (the galaxy is
+    // 100-140M cells across framings) ALWAYS gets full cross-column light — the old 140M gate sat INSIDE that
+    // range, so the same build flooded (bright) at one framing and fell back to per-column (dark overhangs) at
+    // another (round-9 #6/#9 regression). 200M keeps the flood peak (~3·G Uint8 + a right-sized Int32 seed) well
+    // under the 4 GB heap, and only a genuinely huge overview / flat-slab read (far bigger than any real build)
+    // falls back — which is fine (its overhang bleed is imperceptible at that distance) and, crucially, never
+    // crashes. Env-tunable for headroom.
+    const FLOOD_MAX = Math.max(40_000_000, Number(process.env.NOVAMCP_RENDER_FLOOD_MAX_CELLS) || 200_000_000)
+    const doFlood = gridCells <= FLOOD_MAX
     const idx = (wx, y, wz) => ((y - yBot) * D + (wz - minZ)) * W + (wx - minX)
     const filter = new Uint8Array(W * Hy * D)
     const sky = new Uint8Array(W * Hy * D)
