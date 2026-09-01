@@ -392,6 +392,65 @@ function makeTextSprite (text, height, camDist) {
 // wall signs + wall-hanging signs (facing N/S/E/W), and hanging signs (rotation). Returns a Mesh, or null if
 // the orientation can't be determined (caller then falls back to a floating label). Dark text with a light
 // halo so it reads on any wood colour.
+// Load Minecraft's real bitmap font atlas (font/ascii.png: a 16x16 grid of 8x8 glyphs) once, and measure each
+// glyph's true pixel width so text spaces like in-game. Loaded synchronously (node-canvas Image.src=Buffer is
+// sync). Cached per run. Returns { canvas, cell, widths } or null.
+let _mcFont
+function loadMcFont (version) {
+  if (_mcFont !== undefined) return _mcFont
+  _mcFont = null
+  try {
+    const dir = assetsDir(version)
+    if (!dir) return null
+    const buf = fs.readFileSync(path.join(dir, 'font', 'ascii.png'))
+    const img = new Image(); img.src = buf
+    const S = img.width || 128
+    const cell = Math.floor(S / 16) || 8
+    const c = createCanvas(S, S); const cx = c.getContext('2d')
+    cx.drawImage(img, 0, 0)
+    const data = cx.getImageData(0, 0, S, S).data
+    const widths = new Uint8Array(256)
+    for (let g = 0; g < 256; g++) {
+      const gx = (g & 15) * cell, gy = (g >> 4) * cell
+      let w = 0
+      for (let px = 0; px < cell; px++) {
+        let col = false
+        for (let py = 0; py < cell; py++) { if (data[((gy + py) * S + (gx + px)) * 4 + 3] > 16) { col = true; break } }
+        if (col) w = px + 1
+      }
+      widths[g] = g === 32 ? Math.round(cell / 2) : (w || Math.round(cell / 2)) // space = half-cell
+    }
+    _mcFont = { canvas: c, cell, widths }
+  } catch { _mcFont = null }
+  return _mcFont
+}
+
+// Render up to 4 lines with the real MC glyph atlas onto `ctx` (W×H), pixel-crisp + dark (like an undyed sign),
+// fitted + centred. Returns true on success. Blits glyphs at native res to a temp canvas, tints them dark once
+// (source-in), then upscales with smoothing OFF so the pixels stay sharp — authentic in-game look.
+function drawMcSignText (ctx, lines, W, H, font) {
+  const cell = font.cell, gap = 1, nLine = cell + 2, slots = 4
+  const use = lines.slice(0, slots)
+  const lineW = use.map((line) => { let w = 0; for (const ch of line) w += (font.widths[ch.charCodeAt(0) & 0xff] || Math.round(cell / 2)) + gap; return Math.max(1, w) })
+  const maxW = Math.max(1, ...lineW), nH = nLine * slots
+  const tmp = createCanvas(maxW, nH); const tx = tmp.getContext('2d'); tx.imageSmoothingEnabled = false
+  use.forEach((line, i) => {
+    let x = Math.round((maxW - lineW[i]) / 2); const y = i * nLine
+    for (const ch of line) {
+      const c = ch.charCodeAt(0) & 0xff, gx = (c & 15) * cell, gy = (c >> 4) * cell
+      tx.drawImage(font.canvas, gx, gy, cell, cell, x, y, cell, cell)
+      x += (font.widths[c] || Math.round(cell / 2)) + gap
+    }
+  })
+  tx.globalCompositeOperation = 'source-in'; tx.fillStyle = '#161616'; tx.fillRect(0, 0, maxW, nH) // tint dark
+  const pad = Math.round(W * 0.06)
+  const scale = Math.min((W - 2 * pad) / maxW, (H - 2 * pad) / nH)
+  const dw = maxW * scale, dh = nH * scale
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(tmp, (W - dw) / 2, (H - dh) / 2, dw, dh)
+  return true
+}
+
 function makeSignFacePlane (text, info, pos) {
   const clean = sanitizeLabel(String(text).replace(/§./g, '').replace(/^"([\s\S]*)"$/, '$1'))
   const nonEmpty = clean.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim())
@@ -400,41 +459,42 @@ function makeSignFacePlane (text, info, pos) {
   const isWall = name.endsWith('_wall_sign') || name.endsWith('_wall_hanging_sign')
   const isHanging = name.endsWith('hanging_sign')
   const props = { facing: info.facing, rotation: info.rotation }
-  // Canvas: a 16:10-ish sign face; up to 4 lines of dark text with a light halo.
-  const W = 260, H = 160
+  // Canvas matches the plane aspect (0.86w x 0.42h ≈ 2:1) so glyphs aren't stretched. Render with the REAL MC
+  // font atlas for an authentic in-game look; fall back to the system font only if the atlas can't load.
+  const W = 288, H = 144
   const canvas = createCanvas(W, H)
   const ctx = canvas.getContext('2d')
   ctx.clearRect(0, 0, W, H)
-  const n = Math.min(4, nonEmpty.length)
-  const fpt = Math.max(18, Math.min(38, Math.floor((H - 24) / n)))
-  ctx.font = `${fpt}pt ${LABEL_FONT}`
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.lineWidth = 6
-  ctx.strokeStyle = 'rgba(245,245,245,0.85)'
-  ctx.fillStyle = '#141414'
-  const lh = (H - 16) / n
-  nonEmpty.slice(0, 4).forEach((line, i) => {
-    const y = 8 + lh * (i + 0.5)
-    ctx.strokeText(line, W / 2, y)
-    ctx.fillText(line, W / 2, y)
-  })
+  const font = loadMcFont((typeof this !== 'undefined' && this && this.version) || undefined)
+  if (!(font && drawMcSignText(ctx, nonEmpty, W, H, font))) {
+    const n = Math.min(4, nonEmpty.length)
+    const fpt = Math.max(18, Math.min(34, Math.floor((H - 20) / n)))
+    ctx.font = `${fpt}pt ${LABEL_FONT}`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.lineWidth = 6; ctx.strokeStyle = 'rgba(245,245,245,0.85)'; ctx.fillStyle = '#141414'
+    const lh = (H - 16) / n
+    nonEmpty.slice(0, 4).forEach((line, i) => { const y = 8 + lh * (i + 0.5); ctx.strokeText(line, W / 2, y); ctx.fillText(line, W / 2, y) })
+  }
   const tex = new THREE.Texture(canvas)
   tex.needsUpdate = true
   const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(isHanging ? 0.72 : 0.82, isHanging ? 0.62 : 0.5), mat)
+  // Plane height 0.42 (the text-band height); it MUST sit on the board only, never the post. A standing sign's
+  // board spans roughly y 0.55..0.95 of its block (post below), so centre the plane at ~0.75 — centring it too
+  // low (0.68 with a 0.5-tall plane) pushed the bottom line onto the post (the round-6 #11 bug). Wall signs are
+  // vertically centred on their block; hanging signs sit mid-block.
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(isHanging ? 0.70 : 0.82, 0.42), mat)
   let yaw = 0, py = pos.y + 0.5
   if (isWall) {
     const facing = props.facing || 'north'
     const dir = ({ north: [0, -1], south: [0, 1], west: [-1, 0], east: [1, 0] })[facing] || [0, -1]
     yaw = Math.atan2(dir[0], dir[1]) // rotate the plane's +Z normal to point along `dir`
-    py = pos.y + 0.5
+    py = pos.y + 0.52
   } else {
     // standing or hanging sign: text faces the compass angle from `rotation` (0-15, clockwise, 0 = south),
     // same convention the sign-block mesher uses (rotation.y = -rot·2π/16).
     const rot = parseInt(props.rotation != null ? props.rotation : '0', 10) || 0
     yaw = -rot * (Math.PI * 2 / 16)
-    py = pos.y + (isHanging ? 0.5 : 0.68) // standing text panel rides high on the post; hanging sits mid-block
+    py = pos.y + (isHanging ? 0.52 : 0.76) // standing board centre; hanging sits mid-block
   }
   mesh.rotation.y = yaw
   // Push the plane OUT along its (post-rotation) outward normal so it sits just IN FRONT of the sign board
