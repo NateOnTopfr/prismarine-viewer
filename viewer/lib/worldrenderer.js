@@ -142,7 +142,11 @@ class WorldRenderer {
       // anti-alias the moire/smear on wide flat surfaces (the original reason for them). So keep mipmaps ("and"
       // — crisp near + anti-aliased far) and drop anisotropy. If a bleed-free anisotropy is ever wanted it needs
       // per-tile mips / atlas gutters, not the naive extension. See [[hifi-renderer-stair-gap]].
-      texture.minFilter = THREE.NearestMipmapNearestFilter
+      // NearestMipmap*LINEAR*: nearest texel WITHIN a mip level (keeps crisp MC pixels, no cross-tile bleed),
+      // but LINEARLY blend between the two adjacent mip levels — so the LOD transition is a smooth cross-fade
+      // instead of the discrete "color-change band" + abrupt flat-color jump that NearestMipmapNearest showed at
+      // distance (round-8 #15). No anisotropy (that was the bleed). Result: crisp near, smooth graceful far.
+      texture.minFilter = THREE.NearestMipmapLinearFilter
       texture.generateMipmaps = true
       texture.flipY = false
       this.material.map = texture
