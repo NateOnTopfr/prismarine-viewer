@@ -135,16 +135,15 @@ class WorldRenderer {
   updateTexturesData () {
     loadTexture(this.texturesDataUrl || `textures/${this.version}.png`, texture => {
       texture.magFilter = THREE.NearestFilter // crisp pixels up close
-      // CRISP nearest minification, NO mipmaps. The block texture is an ATLAS (all blocks packed in one PNG),
-      // and three.js's generateMipmaps averages the whole atlas per level — so coarse mips blend ACROSS tile
-      // boundaries, painting thick coloured halos on block/mortar edges even up close (verified 2026-08-31 on a
-      // stone-brick wall: orange bleed lines). Anisotropy amplified it. Mipmaps only helped a narrow case (a
-      // wide flat plaza shimmering at distance); the bleed they cause everywhere is a far worse regression, so
-      // we keep the authentic crisp pixel look (vanilla MC's Mipmap=0). If distant-flat moire ever needs
-      // addressing, do it with a bleed-free approach (per-tile mip generation / atlas gutters), not naive
-      // generateMipmaps. See [[hifi-renderer-stair-gap]].
-      texture.minFilter = THREE.NearestFilter
-      texture.generateMipmaps = false
+      // MIPMAPS on (nearest-mip, nearest-sample), anisotropy OFF. A/B-verified (round-6 #1A): the orange
+      // cross-tile "bleed" on block/mortar edges came ENTIRELY from anisotropy=8 — at a grazing angle it pulls
+      // coarser mip levels (which, on a packed atlas, average across tile boundaries) even up close. The mipmaps
+      // ALONE are clean: up close they sample mip 0 (the untouched atlas → no bleed), and at distance they
+      // anti-alias the moire/smear on wide flat surfaces (the original reason for them). So keep mipmaps ("and"
+      // — crisp near + anti-aliased far) and drop anisotropy. If a bleed-free anisotropy is ever wanted it needs
+      // per-tile mips / atlas gutters, not the naive extension. See [[hifi-renderer-stair-gap]].
+      texture.minFilter = THREE.NearestMipmapNearestFilter
+      texture.generateMipmaps = true
       texture.flipY = false
       this.material.map = texture
       this.tMaterial.map = texture
