@@ -9,6 +9,65 @@ function mod (x, n) {
   return ((x % n) + n) % n
 }
 
+// Build a mipmap chain for a packed 16px-tile ATLAS by downsampling EACH tile independently, so no mip level
+// ever averages across tile boundaries (which is what tints distant stone_bricks orange, etc). Alpha-weighted
+// box filter (premultiplied) so cutout textures — leaves/glass — don't get dark fringes. Returns levels 1..N
+// as { data:Uint8Array, width, height } (level 0 is the untouched base). tilePx is the source tile size (16);
+// stops when a tile would shrink below 1px.
+function buildTileMips (base, W, H, tilePx, levels) {
+  const tilesX = W / tilePx, tilesY = H / tilePx
+  const out = []
+  for (let L = 1; L <= levels; L++) {
+    const dTile = tilePx >> L
+    if (dTile < 1) break
+    const ratio = tilePx / dTile // src px per dst px, per axis
+    const dW = tilesX * dTile, dH = tilesY * dTile
+    const data = new Uint8Array(dW * dH * 4)
+    for (let ty = 0; ty < tilesY; ty++) {
+      for (let tx = 0; tx < tilesX; tx++) {
+        const sTX = tx * tilePx, sTY = ty * tilePx
+        const dTX = tx * dTile, dTY = ty * dTile
+        for (let dy = 0; dy < dTile; dy++) {
+          for (let dx = 0; dx < dTile; dx++) {
+            let ar = 0, ag = 0, ab = 0, aa = 0
+            for (let sy = 0; sy < ratio; sy++) {
+              for (let sx = 0; sx < ratio; sx++) {
+                const si = ((sTY + dy * ratio + sy) * W + (sTX + dx * ratio + sx)) * 4
+                const a = base[si + 3]
+                ar += base[si] * a; ag += base[si + 1] * a; ab += base[si + 2] * a; aa += a
+              }
+            }
+            const di = ((dTY + dy) * dW + (dTX + dx)) * 4
+            if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa } else { data[di] = data[di + 1] = data[di + 2] = 0 }
+            data[di + 3] = Math.round(aa / (ratio * ratio))
+          }
+        }
+      }
+    }
+    out.push({ data, width: dW, height: dH })
+  }
+  // Continue the chain DOWN TO 1x1 so it's COMPLETE (an incomplete chain renders BLACK). Below the per-tile
+  // limit a tile is <1px, so ANY averaging mixes ATLAS-neighbour tiles (grey stone_bricks + an orange neighbour
+  // → tan bleed) — which a grazing/low-angle view reaches even at mid-distance. So DON'T average here: NEAREST-
+  // pick one source texel per level. It aliases slightly, but only where a whole block is already sub-pixel
+  // (invisible), and it never mixes tiles → no tan/orange bleed at grazing angles.
+  let prev = out.length ? out[out.length - 1] : { data: base, width: W, height: H }
+  while (prev.width > 1 || prev.height > 1) {
+    const nW = Math.max(1, prev.width >> 1), nH = Math.max(1, prev.height >> 1)
+    const data = new Uint8Array(nW * nH * 4)
+    for (let y = 0; y < nH; y++) {
+      for (let x = 0; x < nW; x++) {
+        const si = (Math.min(prev.height - 1, y * 2) * prev.width + Math.min(prev.width - 1, x * 2)) * 4
+        const di = (y * nW + x) * 4
+        data[di] = prev.data[si]; data[di + 1] = prev.data[si + 1]; data[di + 2] = prev.data[si + 2]; data[di + 3] = prev.data[si + 3]
+      }
+    }
+    const lvl = { data, width: nW, height: nH }
+    out.push(lvl); prev = lvl
+  }
+  return out
+}
+
 class WorldRenderer {
   constructor (scene, numWorkers = 4) {
     this.sectionMeshs = {}
@@ -135,19 +194,25 @@ class WorldRenderer {
   updateTexturesData () {
     loadTexture(this.texturesDataUrl || `textures/${this.version}.png`, texture => {
       texture.magFilter = THREE.NearestFilter // crisp pixels up close
-      // MIPMAPS on (nearest-mip, nearest-sample), anisotropy OFF. A/B-verified (round-6 #1A): the orange
-      // cross-tile "bleed" on block/mortar edges came ENTIRELY from anisotropy=8 — at a grazing angle it pulls
-      // coarser mip levels (which, on a packed atlas, average across tile boundaries) even up close. The mipmaps
-      // ALONE are clean: up close they sample mip 0 (the untouched atlas → no bleed), and at distance they
-      // anti-alias the moire/smear on wide flat surfaces (the original reason for them). So keep mipmaps ("and"
-      // — crisp near + anti-aliased far) and drop anisotropy. If a bleed-free anisotropy is ever wanted it needs
-      // per-tile mips / atlas gutters, not the naive extension. See [[hifi-renderer-stair-gap]].
-      // NearestMipmap*LINEAR*: nearest texel WITHIN a mip level (keeps crisp MC pixels, no cross-tile bleed),
-      // but LINEARLY blend between the two adjacent mip levels — so the LOD transition is a smooth cross-fade
-      // instead of the discrete "color-change band" + abrupt flat-color jump that NearestMipmapNearest showed at
-      // distance (round-8 #15). No anisotropy (that was the bleed). Result: crisp near, smooth graceful far.
-      texture.minFilter = THREE.NearestMipmapLinearFilter
-      texture.generateMipmaps = true
+      // PER-TILE MIPMAPS. The block texture is a packed ATLAS (a 16px-tile grid). Naive generateMipmaps averages
+      // the WHOLE atlas per level, so coarse mips blend ACROSS tile boundaries → distant flat surfaces get a
+      // colour BLEED (e.g. grey stone_bricks tinting orange from a neighbour tile — round-8/9 #3), and anisotropy
+      // pulled those bled levels even up close. Turning mipmaps OFF removes the bleed but brings back MOIRE/smear
+      // on distant flats. The correct fix (both): build the mip chain OURSELVES, downsampling EACH 16px tile
+      // INDEPENDENTLY (alpha-weighted box filter) so a tile's mips only ever contain that tile → no cross-tile
+      // bleed AND full anti-aliasing. NearestMipmapLinear then keeps crisp pixels within a level + a smooth LOD
+      // cross-fade (no #15 band). See [[hifi-renderer-stair-gap]].
+      try {
+        const base = texture.image
+        if (base && base.data && base.width % 16 === 0 && base.height % 16 === 0) {
+          const mips = buildTileMips(base.data, base.width, base.height, 16, 4)
+          if (mips.length) {
+            texture.mipmaps = [{ data: base.data, width: base.width, height: base.height }, ...mips]
+            texture.minFilter = THREE.NearestMipmapLinearFilter
+            texture.generateMipmaps = false
+          } else { texture.minFilter = THREE.NearestFilter; texture.generateMipmaps = false }
+        } else { texture.minFilter = THREE.NearestFilter; texture.generateMipmaps = false }
+      } catch { texture.minFilter = THREE.NearestFilter; texture.generateMipmaps = false }
       texture.flipY = false
       this.material.map = texture
       this.tMaterial.map = texture
