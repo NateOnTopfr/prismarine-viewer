@@ -332,6 +332,18 @@ class WorldView extends EventEmitter {
     for (const { pos } of cols) { if (pos.x < minX) minX = pos.x; if (pos.z < minZ) minZ = pos.z; if (pos.x > maxX) maxX = pos.x; if (pos.z > maxZ) maxZ = pos.z }
     maxX += 15; maxZ += 15
     const W = maxX - minX + 1, D = maxZ - minZ + 1
+    const gridCells = W * Hy * D
+    // If the grid is so enormous we can't even allocate the Uint8 light buffers, emit chunks as-is (no crash).
+    if (gridCells > 1_500_000_000) {
+      for (const { pos, col } of cols) { this.emitter.emit('loadChunk', { x: pos.x, z: pos.z, chunk: col.toJson() }); this.loadedChunks[`${pos.x},${pos.z}`] = true }
+      return
+    }
+    // The region-wide horizontal light FLOOD (phases 2-3) builds seed/BFS lists proportional to the lit-cell
+    // COUNT; on a big read that regular-array grows until it OOMs / throws RangeError "Invalid array length"
+    // (round-6 #3/#6). So run the flood only when the grid is modest; above it, keep the cheap PER-COLUMN
+    // skylight (phase 1) — everything stays LIT (not the old dark/skip fallback), just without cross-column
+    // bleed into deep overhangs, which is fine for the far overview shots that produce such a large grid.
+    const doFlood = gridCells <= 140_000_000
     const idx = (wx, y, wz) => ((y - yBot) * D + (wz - minZ)) * W + (wx - minX)
     const filter = new Uint8Array(W * Hy * D)
     const sky = new Uint8Array(W * Hy * D)
@@ -389,11 +401,17 @@ class WorldView extends EventEmitter {
         front = next
       }
     }
-    const skySeeds = []
-    for (let i = 0; i < sky.length; i++) if (sky[i] > 1) skySeeds.push(i)
-    flood(sky, skySeeds, false)
-    // Phase 3: region-wide block-light flood from emitters (all 6 directions).
-    flood(blk, emitters, true)
+    if (doFlood) {
+      // Seed list as a TYPED array (≤ N cells, each once) — a regular array grown to ~100M entries threw
+      // RangeError "Invalid array length" / OOM under memory pressure (round-6 #3/#6). subarray() is a view,
+      // so it iterates with the right length + no copy.
+      const skyFull = new Int32Array(sky.length)
+      let sc = 0
+      for (let i = 0; i < sky.length; i++) if (sky[i] > 1) skyFull[sc++] = i
+      flood(sky, skyFull.subarray(0, sc), false)
+      // Phase 3: region-wide block-light flood from emitters (all 6 directions).
+      flood(blk, emitters, true)
+    }
     // Phase 4: write back per column + emit.
     for (const { pos, col } of cols) {
       for (let lx = 0; lx < 16; lx++) {
