@@ -402,13 +402,16 @@ class WorldView extends EventEmitter {
       }
     }
     if (doFlood) {
-      // Seed list as a TYPED array (≤ N cells, each once) — a regular array grown to ~100M entries threw
-      // RangeError "Invalid array length" / OOM under memory pressure (round-6 #3/#6). subarray() is a view,
-      // so it iterates with the right length + no copy.
-      const skyFull = new Int32Array(sky.length)
+      // Seed list as a right-sized TYPED array (a regular array grown to ~100M entries threw RangeError
+      // "Invalid array length" / OOM under memory pressure — round-6 #3/#6). Count first, then allocate EXACTLY
+      // the lit-cell count (not the full grid — that over-allocated 4·N bytes and was the single biggest
+      // transient allocation, lowering the safe flood ceiling for no reason).
       let sc = 0
-      for (let i = 0; i < sky.length; i++) if (sky[i] > 1) skyFull[sc++] = i
-      flood(sky, skyFull.subarray(0, sc), false)
+      for (let i = 0; i < sky.length; i++) if (sky[i] > 1) sc++
+      const skySeeds = new Int32Array(sc)
+      let k = 0
+      for (let i = 0; i < sky.length; i++) if (sky[i] > 1) skySeeds[k++] = i
+      flood(sky, skySeeds, false)
       // Phase 3: region-wide block-light flood from emitters (all 6 directions).
       flood(blk, emitters, true)
     }
