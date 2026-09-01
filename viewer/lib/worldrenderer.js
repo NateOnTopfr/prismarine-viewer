@@ -135,21 +135,16 @@ class WorldRenderer {
   updateTexturesData () {
     loadTexture(this.texturesDataUrl || `textures/${this.version}.png`, texture => {
       texture.magFilter = THREE.NearestFilter // crisp pixels up close
-      // MIPMAPPED minification (nearest-mip, nearest-sample) — distant/foreshortened flat surfaces (a wide
-      // gold plaza seen at an angle) otherwise MOIRE/SMEAR from aliasing a full-res atlas at sub-pixel scale.
-      // Minecraft itself mipmaps distant blocks. Nearest-mip avoids the tile-bleed a linear-mip atlas causes.
-      texture.minFilter = THREE.NearestMipmapNearestFilter
-      texture.generateMipmaps = true
-      // ANISOTROPIC filtering — the complementary layer to mipmaps. Mipmaps are isotropic: on a surface seen
-      // at a SHALLOW grazing angle (a plaza floor viewed nearly edge-on) the texture is compressed far more in
-      // one screen axis than the other, so isotropic mip selection picks a coarse level for BOTH axes and
-      // over-blurs the sharp one. Anisotropy takes several samples along the axis of greater compression,
-      // keeping distant grazing floors crisp instead of smeared. Set a fixed 4 — three.js clamps it to the
-      // GPU's EXT_texture_filter_anisotropic max at upload and silently ignores it where unsupported, so it is
-      // always safe. (Nearest mag/mip keeps texels crisp up close + avoids atlas cross-tile bleed.) headless-gl
-      // reports max 16; 8 is chosen because this is an OFFLINE quality-first render, not a real-time frame, so
-      // the extra grazing-angle sharpness is worth the sampling cost. (Verified supported at runtime.)
-      texture.anisotropy = 8
+      // CRISP nearest minification, NO mipmaps. The block texture is an ATLAS (all blocks packed in one PNG),
+      // and three.js's generateMipmaps averages the whole atlas per level — so coarse mips blend ACROSS tile
+      // boundaries, painting thick coloured halos on block/mortar edges even up close (verified 2026-08-31 on a
+      // stone-brick wall: orange bleed lines). Anisotropy amplified it. Mipmaps only helped a narrow case (a
+      // wide flat plaza shimmering at distance); the bleed they cause everywhere is a far worse regression, so
+      // we keep the authentic crisp pixel look (vanilla MC's Mipmap=0). If distant-flat moire ever needs
+      // addressing, do it with a bleed-free approach (per-tile mip generation / atlas gutters), not naive
+      // generateMipmaps. See [[hifi-renderer-stair-gap]].
+      texture.minFilter = THREE.NearestFilter
+      texture.generateMipmaps = false
       texture.flipY = false
       this.material.map = texture
       this.tMaterial.map = texture
