@@ -46,20 +46,31 @@ function buildTileMips (base, W, H, tilePx, levels) {
     }
     out.push({ data, width: dW, height: dH })
   }
-  // Continue the chain DOWN TO 1x1 so it's COMPLETE (an incomplete chain renders BLACK). Below the per-tile
-  // limit a tile is <1px, so ANY averaging mixes ATLAS-neighbour tiles (grey stone_bricks + an orange neighbour
-  // → tan bleed) — which a grazing/low-angle view reaches even at mid-distance. So DON'T average here: NEAREST-
-  // pick one source texel per level. It aliases slightly, but only where a whole block is already sub-pixel
-  // (invisible), and it never mixes tiles → no tan/orange bleed at grazing angles.
+  // Continue the chain DOWN TO 1x1 so it's COMPLETE (an incomplete chain renders BLACK, and headless-gl is
+  // WebGL1 so we CAN'T clamp with TEXTURE_MAX_LEVEL — verified INVALID_ENUM). Below the per-tile limit a tile is
+  // <1px so these levels unavoidably mix atlas-neighbour tiles; a 2x2 alpha-weighted box average keeps that
+  // blend SMOOTH + desaturated (a uniform haze-like tint) rather than the spiky wrong-colour picks a nearest
+  // grab produced. Only reached where a whole block is already sub-pixel / at extreme grazing. A fully bleed-
+  // free distance needs a WebGL2 texture-array backend or an atlas with gutters (deferred). See
+  // [[hifi-renderer-stair-gap]].
   let prev = out.length ? out[out.length - 1] : { data: base, width: W, height: H }
   while (prev.width > 1 || prev.height > 1) {
     const nW = Math.max(1, prev.width >> 1), nH = Math.max(1, prev.height >> 1)
     const data = new Uint8Array(nW * nH * 4)
     for (let y = 0; y < nH; y++) {
       for (let x = 0; x < nW; x++) {
-        const si = (Math.min(prev.height - 1, y * 2) * prev.width + Math.min(prev.width - 1, x * 2)) * 4
+        let ar = 0, ag = 0, ab = 0, aa = 0
+        for (let sy = 0; sy < 2; sy++) {
+          for (let sx = 0; sx < 2; sx++) {
+            const px = Math.min(prev.width - 1, x * 2 + sx), py = Math.min(prev.height - 1, y * 2 + sy)
+            const si = (py * prev.width + px) * 4
+            const a = prev.data[si + 3]
+            ar += prev.data[si] * a; ag += prev.data[si + 1] * a; ab += prev.data[si + 2] * a; aa += a
+          }
+        }
         const di = (y * nW + x) * 4
-        data[di] = prev.data[si]; data[di + 1] = prev.data[si + 1]; data[di + 2] = prev.data[si + 2]; data[di + 3] = prev.data[si + 3]
+        if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa } else { data[di] = data[di + 1] = data[di + 2] = 0 }
+        data[di + 3] = Math.round(aa / 4)
       }
     }
     const lvl = { data, width: nW, height: nH }
