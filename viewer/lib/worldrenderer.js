@@ -14,8 +14,56 @@ function mod (x, n) {
 // box filter (premultiplied) so cutout textures — leaves/glass — don't get dark fringes. Returns levels 1..N
 // as { data:Uint8Array, width, height } (level 0 is the untouched base). tilePx is the source tile size (16);
 // stops when a tile would shrink below 1px.
-function buildTileMips (base, W, H, tilePx, levels) {
+// Per-tile mean OPAQUE colour (alpha-weighted). Used to fill fully-transparent mip/atlas pixels with the
+// tile's own colour instead of black — otherwise NearestMipmapLinear blends a green level with a
+// black-transparent coarser level → DARK-GREEN cutout fragments (grass/leaves/flowers reading black at
+// distance; user note #4). Alpha stays 0, so the alphaTest cutout still discards them.
+function computeTileMeans (base, W, H, tilePx) {
   const tilesX = W / tilePx, tilesY = H / tilePx
+  const means = new Array(tilesX * tilesY)
+  let gr = 0, gg = 0, gb = 0, ga = 0
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      let r = 0, g = 0, b = 0, a = 0
+      for (let y = 0; y < tilePx; y++) {
+        for (let x = 0; x < tilePx; x++) {
+          const si = ((ty * tilePx + y) * W + (tx * tilePx + x)) * 4
+          const al = base[si + 3]
+          if (al > 0) { r += base[si] * al; g += base[si + 1] * al; b += base[si + 2] * al; a += al }
+        }
+      }
+      means[ty * tilesX + tx] = a > 0 ? [Math.round(r / a), Math.round(g / a), Math.round(b / a)] : null
+      gr += r; gg += g; gb += b; ga += a
+    }
+  }
+  const global = ga > 0 ? [Math.round(gr / ga), Math.round(gg / ga), Math.round(gb / ga)] : [128, 128, 128]
+  return { means, global, tilesX }
+}
+
+// Copy the atlas, replacing each tile's fully-transparent pixels' RGB with that tile's mean opaque colour
+// (alpha untouched). This "alpha bleed"/dilation stops black bleeding into cutout textures when the base
+// level cross-fades with a coarser mip. (Semi-transparent pixels already carry colour, so leave them.)
+function bleedTransparentTiles (base, W, H, tilePx, tm) {
+  const out = base.slice()
+  const tilesX = W / tilePx, tilesY = H / tilePx
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      const m = tm.means[ty * tilesX + tx]
+      if (!m) continue // fully transparent tile — nothing to bleed
+      for (let y = 0; y < tilePx; y++) {
+        for (let x = 0; x < tilePx; x++) {
+          const si = ((ty * tilePx + y) * W + (tx * tilePx + x)) * 4
+          if (out[si + 3] < 8) { out[si] = m[0]; out[si + 1] = m[1]; out[si + 2] = m[2] }
+        }
+      }
+    }
+  }
+  return out
+}
+
+function buildTileMips (base, W, H, tilePx, levels, tm) {
+  const tilesX = W / tilePx, tilesY = H / tilePx
+  const gm = tm ? tm.global : [0, 0, 0]
   const out = []
   for (let L = 1; L <= levels; L++) {
     const dTile = tilePx >> L
@@ -38,7 +86,8 @@ function buildTileMips (base, W, H, tilePx, levels) {
               }
             }
             const di = ((dTY + dy) * dW + (dTX + dx)) * 4
-            if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa } else { data[di] = data[di + 1] = data[di + 2] = 0 }
+            if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa }
+            else { const m = (tm && tm.means[ty * tilesX + tx]) || gm; data[di] = m[0]; data[di + 1] = m[1]; data[di + 2] = m[2] } // fill transparent with tile colour, not black
             data[di + 3] = Math.round(aa / (ratio * ratio))
           }
         }
@@ -69,7 +118,7 @@ function buildTileMips (base, W, H, tilePx, levels) {
           }
         }
         const di = (y * nW + x) * 4
-        if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa } else { data[di] = data[di + 1] = data[di + 2] = 0 }
+        if (aa > 0) { data[di] = ar / aa; data[di + 1] = ag / aa; data[di + 2] = ab / aa } else { data[di] = gm[0]; data[di + 1] = gm[1]; data[di + 2] = gm[2] } // sub-tile levels: global mean, not black
         data[di + 3] = Math.round(aa / 4)
       }
     }
@@ -216,9 +265,13 @@ class WorldRenderer {
       try {
         const base = texture.image
         if (base && base.data && base.width % 16 === 0 && base.height % 16 === 0) {
-          const mips = buildTileMips(base.data, base.width, base.height, 16, 4)
+          // Alpha-bleed the atlas (transparent pixels -> tile's mean colour) so cutout textures (grass/leaves/
+          // flowers) don't cross-fade toward black at distance (user note #4). Level 0 uses the bled copy too.
+          const tm = computeTileMeans(base.data, base.width, base.height, 16)
+          const bled = bleedTransparentTiles(base.data, base.width, base.height, 16, tm)
+          const mips = buildTileMips(bled, base.width, base.height, 16, 4, tm)
           if (mips.length) {
-            texture.mipmaps = [{ data: base.data, width: base.width, height: base.height }, ...mips]
+            texture.mipmaps = [{ data: bled, width: base.width, height: base.height }, ...mips]
             texture.minFilter = THREE.NearestMipmapLinearFilter
             texture.generateMipmaps = false
           } else { texture.minFilter = THREE.NearestFilter; texture.generateMipmaps = false }
