@@ -392,7 +392,15 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
       // so shadowed recesses / floating-island undersides / dark-material corners rendered near-black.
       // Re-apply a TRUE minimum AFTER AO so shadowed geometry stays dark-but-legible in a render.
       if (light < 0.14) light = 0.14
-      attr.colors.push(tint[0] * light, tint[1] * light, tint[2] * light)
+      // Defensive: a non-finite tint/light (e.g. a bad biome-tint lookup or a NaN in a rotated model) would
+      // push NaN into the colour buffer, which the GPU clamps to 0 → a block that renders ALL BLACK. Guard
+      // each channel so a colour glitch degrades to the light value instead of a black artifact.
+      const cr = tint[0] * light, cg = tint[1] * light, cb = tint[2] * light
+      attr.colors.push(
+        Number.isFinite(cr) ? cr : light,
+        Number.isFinite(cg) ? cg : light,
+        Number.isFinite(cb) ? cb : light
+      )
     }
 
     if (doAO && aos[0] + aos[3] >= aos[1] + aos[2]) {
