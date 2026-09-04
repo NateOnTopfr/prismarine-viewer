@@ -253,9 +253,23 @@ function renderElement (world, cursor, element, doAO, attr, globalMatrix, global
     // Floored so nothing is pure black. skyLight assumes daytime (renders are day by default).
     let faceLight = 1
     {
-      const lb = world.getBlock(cursor.plus(new Vec3(...dir)))
-      const sky = (lb && lb.skyLight != null) ? lb.skyLight : 15
-      const blk = (lb && lb.light != null) ? lb.light : 0
+      // A full CUBE face is lit by the air it faces (cursor+dir). But a NON-cube block — a cross/plant
+      // (grass, flowers, saplings), and any thin/partial shape — has faces whose normal can point INTO a
+      // solid neighbour (a wall, or a terrain slope diagonally adjacent) whose skyLight is 0, which made
+      // that tuft render BLACK next to walls/slopes while open-ground tufts stayed green (user #4). A plant
+      // is really lit by WHERE IT SITS + the sky above it, so for non-cube blocks sample the brightest of
+      // its own cell and the cell above instead of a neighbour that may be solid.
+      let sky, blk
+      if (block.isCube === false) {
+        const own = world.getBlock(cursor)
+        const above = world.getBlock(cursor.plus(new Vec3(0, 1, 0)))
+        sky = Math.max((own && own.skyLight != null) ? own.skyLight : 15, (above && above.skyLight != null) ? above.skyLight : 15)
+        blk = Math.max((own && own.light != null) ? own.light : 0, (above && above.light != null) ? above.light : 0)
+      } else {
+        const lb = world.getBlock(cursor.plus(new Vec3(...dir)))
+        sky = (lb && lb.skyLight != null) ? lb.skyLight : 15
+        blk = (lb && lb.light != null) ? lb.light : 0
+      }
       const lvl = Math.min(15, Math.max(blk, sky))
       faceLight = 0.12 + 0.88 * (lvl / 15)
       // Emissive self-glow: a light-SOURCE block renders its own faces bright regardless of the
